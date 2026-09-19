@@ -1,0 +1,95 @@
+<?xml version='1.0' encoding='utf-8'?>
+<oor:component-data xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:oor="http://openoffice.org/2001/registry" oor:name="Addons" oor:package="org.openoffice.Office">
+  <node oor:name="AddonUI">
+    <node oor:name="OfficeMenuBar">
+      <node oor:name="br.com.assinafy.libreoffice.menu" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string">
+          <value>Assinafy</value>
+        </prop>
+        <prop oor:name="Context" oor:type="xs:string">
+          <value>com.sun.star.text.TextDocument,com.sun.star.sheet.SpreadsheetDocument,com.sun.star.presentation.PresentationDocument,com.sun.star.drawing.DrawingDocument</value>
+        </prop>
+        <node oor:name="Submenu">
+          <node oor:name="Send" oor:op="replace">
+            <prop oor:name="URL" oor:type="xs:string">
+              <value>br.com.assinafy.libreoffice:Send</value>
+            </prop>
+            <prop oor:name="Title" oor:type="xs:string">
+              <value>Enviar para assinatura…</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+            <prop oor:name="Context" oor:type="xs:string">
+              <value>com.sun.star.text.TextDocument,com.sun.star.sheet.SpreadsheetDocument,com.sun.star.presentation.PresentationDocument,com.sun.star.drawing.DrawingDocument</value>
+            </prop>
+          </node>
+          <node oor:name="History" oor:op="replace">
+            <prop oor:name="URL" oor:type="xs:string">
+              <value>br.com.assinafy.libreoffice:History</value>
+            </prop>
+            <prop oor:name="Title" oor:type="xs:string">
+              <value>Envios recentes…</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+            <prop oor:name="Context" oor:type="xs:string">
+              <value>com.sun.star.text.TextDocument,com.sun.star.sheet.SpreadsheetDocument,com.sun.star.presentation.PresentationDocument,com.sun.star.drawing.DrawingDocument</value>
+            </prop>
+          </node>
+          <node oor:name="Settings" oor:op="replace">
+            <prop oor:name="URL" oor:type="xs:string">
+              <value>br.com.assinafy.libreoffice:Settings</value>
+            </prop>
+            <prop oor:name="Title" oor:type="xs:string">
+              <value>Conectar conta…</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+            <prop oor:name="Context" oor:type="xs:string">
+              <value>com.sun.star.text.TextDocument,com.sun.star.sheet.SpreadsheetDocument,com.sun.star.presentation.PresentationDocument,com.sun.star.drawing.DrawingDocument</value>
+            </prop>
+          </node>
+        </node>
+      </node>
+    </node>
+    <node oor:name="OfficeToolBar">
+      <node oor:name="br.com.assinafy.libreoffice.toolbar" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string">
+          <value>Assinafy</value>
+        </prop>
+        <node oor:name="Send" oor:op="replace">
+          <prop oor:name="URL" oor:type="xs:string">
+            <value>br.com.assinafy.libreoffice:Send</value>
+          </prop>
+          <prop oor:name="Title" oor:type="xs:string">
+            <value>Enviar para assinatura</value>
+          </prop>
+          <prop oor:name="Target" oor:type="xs:string">
+            <value>_self</value>
+          </prop>
+          <prop oor:name="Context" oor:type="xs:string">
+            <value>com.sun.star.text.TextDocument,com.sun.star.sheet.SpreadsheetDocument,com.sun.star.presentation.PresentationDocument,com.sun.star.drawing.DrawingDocument</value>
+          </prop>
+        </node>
+      </node>
+    </node>
+    <node oor:name="Images">
+      <node oor:name="Send" oor:op="replace">
+        <prop oor:name="URL" oor:type="xs:string">
+          <value>br.com.assinafy.libreoffice:Send</value>
+        </prop>
+        <node oor:name="UserDefinedImages">
+          <prop oor:name="ImageSmallURL" oor:type="xs:string">
+            <value>%origin%/icons/assinafy.png</value>
+          </prop>
+          <prop oor:name="ImageBigURL" oor:type="xs:string">
+            <value>%origin%/icons/assinafy.png</value>
+          </prop>
+        </node>
+      </node>
+    </node>
+  </node>
+</oor:component-data>

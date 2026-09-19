@@ -1,0 +1,30 @@
+FROM debian:trixie-slim
+
+ARG TARGETARCH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl python3 xvfb xauth fonts-liberation \
+    && case "$TARGETARCH" in arm64) arch=aarch64 ;; amd64) arch=x86_64 ;; *) exit 1 ;; esac \
+    && archive="LibreOffice_26.8.0_Linux_${arch}_deb.tar.gz" \
+    && url="https://download.documentfoundation.org/libreoffice/stable/26.8.0/deb/${arch}/${archive}" \
+    && cd /tmp \
+    && curl -fsSL "$url" -o "$archive" \
+    && curl -fsSL "$url.sha256" -o "$archive.sha256" \
+    && sha256sum -c "$archive.sha256" \
+    && mkdir office \
+    && tar -xzf "$archive" -C office --strip-components=1 \
+    && apt-get install -y --no-install-recommends /tmp/office/DEBS/*.deb \
+    && rm -rf /tmp/office /tmp/LibreOffice_* /var/lib/apt/lists/*
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libnss3 libdbus-1-3 libcairo2 libglib2.0-0t64 libcups2t64 libfontconfig1 libxinerama1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 1000 office
+USER office
+WORKDIR /workspace
+ENTRYPOINT ["xvfb-run", "-a", "python3", "scripts/smoke_office.py", \
+    "--soffice", "/opt/libreoffice26.8/program/soffice", \
+    "--unopkg", "/opt/libreoffice26.8/program/unopkg", \
+    "--uno-python", "/opt/libreoffice26.8/program/python"]
