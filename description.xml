@@ -4,7 +4,7 @@
              xmlns:lo="http://libreoffice.org/extensions/description/2011"
              xmlns:xlink="http://www.w3.org/1999/xlink">
   <identifier value="br.com.assinafy.libreoffice"/>
-  <version value="1.0.0"/>
+  <version value="1.0.1"/>
   <display-name><name lang="pt-BR">Assinafy para LibreOffice</name><name lang="en">Assinafy for LibreOffice</name></display-name>
   <publisher><name lang="en" xlink:href="https://www.assinafy.com.br">Assinafy</name></publisher>
   <icon><default xlink:href="icons/assinafy.png"/></icon>

@@ -15,7 +15,7 @@ def main():
     parser.add_argument("--soffice", required=True)
     parser.add_argument("--unopkg", required=True)
     parser.add_argument("--uno-python", required=True)
-    parser.add_argument("--oxt", type=Path, default=Path("dist/assinafy-1.0.0.oxt"))
+    parser.add_argument("--oxt", type=Path, default=Path("dist/assinafy-1.0.1.oxt"))
     args = parser.parse_args()
     subprocess.run(
         [args.uno_python, "-c", "import sys, uno; assert sys.version_info >= (3, 11)"],

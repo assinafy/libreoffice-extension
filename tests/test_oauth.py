@@ -1,3 +1,4 @@
+import ssl
 import threading
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -58,6 +59,14 @@ def test_pkce_rfc7636_vector():
 def test_redirect_rejected(uri):
     with pytest.raises(ValueError):
         Config(client_id="client", redirect_uri=uri).validate()
+
+
+def test_oauth_client_requires_tls_1_2_or_newer():
+    oauth = OAuth(CONFIG, lambda _: None)
+    context = oauth.http._transport._pool._ssl_context
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    oauth.http.close()
 
 
 def test_production_defaults_require_client_id():

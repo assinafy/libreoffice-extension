@@ -10,7 +10,7 @@ e enviado à Assinafy após confirmação.
    26.8 ou posterior, com Python/UNO 3.11+. Em distribuições Linux que separam
    esses componentes, instale também o provedor de scripts Python do LibreOffice.
 2. Abra **Ferramentas → Gerenciador de extensões → Adicionar** e selecione
-   o arquivo `assinafy-1.0.0.oxt` baixado da distribuição Assinafy.
+   o arquivo `assinafy-1.0.1.oxt` baixado da distribuição Assinafy.
 3. Reinicie o LibreOffice. O menu **Assinafy** aparece nos quatro editores.
 4. Abra **Assinafy → Conectar conta** e clique em **Conectar**.
 

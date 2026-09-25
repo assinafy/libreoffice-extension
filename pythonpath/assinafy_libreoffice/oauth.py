@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import secrets
+import ssl
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -47,7 +48,12 @@ class OAuth:
         self.config = config
         self.save = save
         self.tokens = tokens or {}
-        self.http = httpx.Client(timeout=25, follow_redirects=False, transport=transport)
+        # httpx's default verified context, refusing TLS 1.0 and 1.1.
+        tls = httpx.create_ssl_context()
+        tls.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.http = httpx.Client(
+            timeout=25, follow_redirects=False, transport=transport, verify=tls
+        )
         self.metadata = None
         self.lock = threading.RLock()
 
