@@ -1,4 +1,5 @@
 import json
+import ssl
 import time
 from dataclasses import replace
 
@@ -216,9 +217,40 @@ def test_workspace_boundary_and_path_validation(backend):
         workflow.document("../other")
 
 
+def test_sdk_client_requires_tls_1_2_even_if_the_runtime_allows_less(monkeypatch):
+    default_context = ssl.create_default_context
+
+    def legacy_default(*args, **kwargs):
+        context = default_context(*args, **kwargs)
+        context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+        return context
+
+    monkeypatch.setattr(ssl, "create_default_context", legacy_default)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    oauth = OAuth(CONFIG, lambda _: None, {**token_response(), "expires_at": time.time() + 3600})
+    with Workflow(oauth, lambda *a: None).client() as client:
+        http = client.get_http_client()
+        transports = [t for t in (http._transport, *http._mounts.values()) if t is not None]
+        assert len(transports) >= 2
+        for transport in transports:
+            context = transport._pool._ssl_context
+            assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+            assert context.verify_mode == ssl.CERT_REQUIRED
+    oauth.close()
+
+
+def test_connection_failures_are_reported_as_network_errors(backend):
+    workflow, _, _, _, failures = backend
+    failures[("GET", "accounts")] = httpx.ConnectError("[SSL: UNSUPPORTED_PROTOCOL]")
+    with pytest.raises(AssinafyError) as exc:
+        workflow.account_info()
+    assert "TLS 1.2" in error_message(exc.value)
+    assert "TLS" not in error_message(AssinafyError("x", {"document_id": "doc1"}))
+
+
 def test_scope_prevents_writes(backend):
     workflow, events, _, _, _ = backend
-    workflow.oauth.tokens["scope"] = "account:read documents:read"
+    workflow.oauth.tokens["scope"] = "documents:read"
     with pytest.raises(ConnectionError):
         workflow.prepare(PDF, "test.pdf", [RECIPIENT])
     assert not events
@@ -274,7 +306,7 @@ def test_refreshed_scopes_checked_before_retrying_a_write(backend, monkeypatch):
 
     def refresh(force=False):
         if force:
-            workflow.oauth.tokens["scope"] = "account:read documents:read"
+            workflow.oauth.tokens["scope"] = "documents:read"
         return access_token()
 
     monkeypatch.setattr(workflow.oauth, "access_token", refresh)

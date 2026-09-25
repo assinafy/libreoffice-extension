@@ -43,6 +43,8 @@ for (const [key,value] of [["state","bad.54321"], ["state","a".repeat(43)+".22"]
   const invalid = new URLSearchParams(valid); invalid.set(key,value);
   assert.deepEqual(run("?" + invalid), [["clear"]]);
 }
+const noIssuer = new URLSearchParams(valid); noIssuer.delete("iss");
+assert.deepEqual(run("?" + noIssuer), [["clear"]]);
 assert.deepEqual(run("?" + valid + "&state=other"), [["clear"]]);
 assert.deepEqual(run("?" + valid + "&error=access_denied"), [["clear"]]);
 for (const suffix of ["\n", "\r", "\r\n"]) {

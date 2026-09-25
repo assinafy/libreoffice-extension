@@ -67,6 +67,24 @@ def test_dependency_drift_rejected_before_replacing_output(tmp_path, monkeypatch
     assert output.read_bytes() == b"existing release"
 
 
+def test_editable_or_local_sdk_rejected_before_replacing_output(tmp_path, monkeypatch):
+    import importlib.metadata
+
+    builder = runpy.run_path("scripts/build_oxt.py")
+    output = tmp_path / "release.oxt"
+    output.write_bytes(b"existing release")
+    read = importlib.metadata.PathDistribution.read_text
+    editable = '{"url": "file:///python-sdk", "dir_info": {"editable": true}}'
+    monkeypatch.setattr(
+        importlib.metadata.PathDistribution,
+        "read_text",
+        lambda self, name: editable if name == "direct_url.json" else read(self, name),
+    )
+    with pytest.raises(ValueError, match="venv limpo"):
+        builder["build"](builder["Config"](), output)
+    assert output.read_bytes() == b"existing release"
+
+
 def test_source_contains_no_live_test_contacts():
     private_values = [
         value.strip().casefold()

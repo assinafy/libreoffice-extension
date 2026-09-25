@@ -272,9 +272,10 @@ class App:
     def save_tokens(self, tokens):
         def save():
             key = self.token_key()
+            # Replace, never merge: a record keeping memory and persistent copies reads stale.
+            self.vault.remove(key, "oauth")
+            self.vault.removePersistent(key, "oauth")
             if not tokens:
-                self.vault.remove(key, "oauth")
-                self.vault.removePersistent(key, "oauth")
                 return
             passwords = (json.dumps(tokens),)
             if (
@@ -288,13 +289,19 @@ class App:
 
         self.on_main(save)
 
+    def load_tokens(self):
+        def load():
+            record = self.vault.findForName(self.token_key(), "oauth", self.interaction)
+            users = record.UserList
+            return decode_tokens(users[0].Passwords[0]) if users and users[0].Passwords else {}
+
+        return self.on_main(load)
+
     def get_workflow(self):
         if self.workflow is None:
             self.config.validate()
-            record = self.vault.findForName(self.token_key(), "oauth", self.interaction)
-            users = record.UserList
-            tokens = decode_tokens(users[0].Passwords[0]) if users and users[0].Passwords else {}
-            self.workflow = Workflow(OAuth(self.config, self.save_tokens, tokens), self.record)
+            oauth = OAuth(self.config, self.save_tokens, self.load_tokens(), load=self.load_tokens)
+            self.workflow = Workflow(oauth, self.record)
         return self.workflow
 
     def record(self, document_id, status):

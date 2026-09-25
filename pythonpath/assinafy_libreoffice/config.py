@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SCOPES = "account:read documents:read documents:write offline_access"
+SCOPES = "documents:read documents:write offline_access"
 
 
 @dataclass(frozen=True)

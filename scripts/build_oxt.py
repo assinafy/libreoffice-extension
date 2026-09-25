@@ -26,6 +26,9 @@ def build(config, output):
     versions = {name: importlib.metadata.version(name) for name in DEPENDENCIES}
     if versions != DEPENDENCIES:
         raise ValueError("Instale as versões fixadas em requirements-oxt.txt antes de empacotar.")
+    # PEP 610: editable, local-path, VCS and URL installs record direct_url.json; PyPI ones never.
+    if any(importlib.metadata.distribution(n).read_text("direct_url.json") for n in DEPENDENCIES):
+        raise ValueError("Empacote a partir de um venv limpo, com as dependências do PyPI.")
     ns = {"d": "http://openoffice.org/extensions/description/2006"}
     assert ET.parse(ROOT / "description.xml").find("d:version", ns).get("value") == __version__
     staging = ROOT / "build" / "oxt"
@@ -62,14 +65,6 @@ def build(config, output):
     for name in sorted(DEPENDENCIES):
         dist = importlib.metadata.distribution(name)
         files = dist.files or []
-        if name == "assinafy" and any(str(f).endswith(".pth") for f in files):
-            import assinafy
-
-            shutil.copytree(
-                Path(assinafy.__file__).parent,
-                staging / "pythonpath/assinafy",
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"),
-            )
         for file in files:
             parts = file.parts
             if (

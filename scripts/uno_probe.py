@@ -11,12 +11,21 @@ from types import SimpleNamespace
 import uno
 import unohelper
 from com.sun.star.awt import XCallback
+from com.sun.star.task import XInteractionHandler
 
 
 def prop(name, value):
     p = uno.createUnoStruct("com.sun.star.beans.PropertyValue")
     p.Name, p.Value = name, value
     return p
+
+
+class MasterPassword(unohelper.Base, XInteractionHandler):
+    def handle(self, request):
+        # The container takes the 32-hex-digit digest the office dialog derives from the text.
+        choice = next(c for c in request.getContinuations() if hasattr(c, "setPassword"))
+        choice.setPassword("0123456789abcdef" * 2)
+        choice.select()
 
 
 def check_native(ctx, profile, output):
@@ -219,12 +228,15 @@ def check_native(ctx, profile, output):
                     app.document_details("test-document")
                     app.workflow = None
                     app.save_tokens({"access_token": "test-session-value"})
-                    found = app.vault.findForName(app.token_key(), "oauth", app.interaction)
-                    assert (
-                        json.loads(found.UserList[0].Passwords[0])["access_token"]
-                        == "test-session-value"
-                    )
+                    assert app.load_tokens() == {"access_token": "test-session-value"}
+                    # A master password set mid-session makes the next save persistent: the
+                    # newest tokens must replace the session copy, not sit behind it.
+                    app.vault.allowPersistentStoring(True)
+                    assert app.vault.changeMasterPassword(MasterPassword())
+                    app.save_tokens({"access_token": "test-rotated-value"})
+                    assert app.load_tokens() == {"access_token": "test-rotated-value"}
                     app.save_tokens({})
+                    assert app.load_tokens() == {}
                     check_confirmations(doc, path.read_bytes())
             finally:
                 Dialog.execute = real_execute

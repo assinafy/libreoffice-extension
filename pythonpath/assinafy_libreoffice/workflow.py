@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from assinafy import ApiError, AssinafyClient, AssinafyError, ValidationError
 from assinafy.utils import validate_datetime, validate_email
 
-from .oauth import ConnectionError
+from .oauth import UNSENT, ConnectionError
 
 
 @dataclass(frozen=True)
@@ -86,6 +86,11 @@ def require_id(data):
 def error_message(error):
     if isinstance(error, (ConnectionError, ValueError)):
         return str(error)
+    if isinstance(error, UNSENT) or isinstance(error.__cause__, UNSENT):
+        return (
+            "Não foi possível abrir uma conexão segura (TLS 1.2 ou superior) com a Assinafy. "
+            "Verifique a rede e tente novamente."
+        )
     if isinstance(error, ApiError):
         return {
             400: "Dados recusados. Confira destinatários, documento e permissões do plano.",
@@ -114,15 +119,19 @@ class Workflow:
                 "Não foi possível atualizar o histórico local.", {"document_id": document_id}
             ) from exc
 
+    def client(self, **options):
+        # assinafy >= 1.9.1 requires TLS 1.2+ on its own client, proxied transports included.
+        return self.factory(
+            token=self.oauth.access_token(), base_url=self.oauth.config.api_url, **options
+        )
+
     def call(self, action, *, write=False):
         with self.oauth.lock:
             for attempt in range(2):
                 self.oauth.require("documents:write" if write else "documents:read")
                 try:
                     if self.account is None:
-                        with self.factory(
-                            token=self.oauth.access_token(), base_url=self.oauth.config.api_url
-                        ) as client:
+                        with self.client() as client:
                             accounts = client.accounts.list()
                             if len(accounts) != 1:
                                 raise ConnectionError(
@@ -130,11 +139,7 @@ class Workflow:
                                 )
                             require_id(accounts[0])
                             self.account = accounts[0]
-                    with self.factory(
-                        token=self.oauth.access_token(),
-                        base_url=self.oauth.config.api_url,
-                        account_id=self.account["id"],
-                    ) as client:
+                    with self.client(account_id=self.account["id"]) as client:
                         return action(client)
                 except ApiError as exc:
                     if exc.status_code != 401 or attempt:

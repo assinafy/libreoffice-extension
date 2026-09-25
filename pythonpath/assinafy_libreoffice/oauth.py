@@ -28,6 +28,11 @@ CALLBACK_CSP = (
     + base64.b64encode(hashlib.sha256(CLEAR_HISTORY.encode()).digest()).decode()
     + "'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
+# Authorization errors a retry cannot fix; access_denied means the user declined.
+REQUEST_ERRORS = {"invalid_scope", "invalid_request", "unsupported_response_type", "invalid_target"}
+# Failures raised before a request reaches the server: DNS, connect, TLS handshake, or a proxy
+# refusing the tunnel (httpcore raises ProxyError only before the request is sent).
+UNSENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError)
 
 
 class ConnectionError(RuntimeError):
@@ -42,12 +47,23 @@ def challenge(verifier: str) -> str:
     )
 
 
+def usable(tokens):
+    return bool(tokens.get("access_token")) and tokens.get("expires_at", 0) > time.time() + 60
+
+
 class OAuth:
-    def __init__(self, config: Config, save, tokens=None, transport=None):
+    # Shared by every instance, so all holders of a connection in this process refresh in turn.
+    # One office process owns a profile's password container (LibreOffice hands a second launch
+    # on the same profile to the running one), so no cross-process lock is needed.
+    lock = threading.RLock()
+
+    def __init__(self, config: Config, save, tokens=None, transport=None, load=None):
         config.validate()
         self.config = config
         self.save = save
         self.tokens = tokens or {}
+        # Reads the stored tokens, which are current when several holders share the store.
+        self.load = load or (lambda: self.tokens)
         # httpx's default verified context, refusing TLS 1.0 and 1.1.
         tls = httpx.create_ssl_context()
         tls.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -55,7 +71,6 @@ class OAuth:
             timeout=25, follow_redirects=False, transport=transport, verify=tls
         )
         self.metadata = None
-        self.lock = threading.RLock()
 
     def discover(self):
         response = self.http.get(self.config.issuer + "/.well-known/oauth-authorization-server")
@@ -113,9 +128,11 @@ class OAuth:
         refresh = data.get("refresh_token")
         if refresh is not None and (not isinstance(refresh, str) or not refresh):
             raise ConnectionError("Resposta de renovação inválida.")
-        granted = set(data["scope"].split())
-        if not {"account:read", "documents:read"}.issubset(granted):
-            raise ConnectionError("A conta não autorizou a leitura do workspace e dos documentos.")
+        # Every refresh retires the token sent, so it must return a new one to save before use.
+        if "refresh_token" in body and refresh in (None, body["refresh_token"]):
+            raise ConnectionError("Resposta de renovação inválida.")
+        if "documents:read" not in data["scope"].split():
+            raise ConnectionError("A conta não autorizou a leitura dos documentos.")
         data.pop("id_token", None)
         data["expires_at"] = time.time() + ttl
         self._replace(data)
@@ -192,7 +209,12 @@ class OAuth:
                 deadline = time.monotonic() + timeout
                 while not result and time.monotonic() < deadline:
                     server.handle_request()
-            if not result or result.get("error") or not result.get("code"):
+            if result.get("error") in REQUEST_ERRORS:
+                raise ConnectionError(
+                    "A Assinafy recusou o pedido de conexão (" + result["error"] + "). "
+                    "Atualize a extensão ou contate o suporte."
+                )
+            if not result.get("code"):
                 raise ConnectionError("Conexão cancelada ou expirada. Tente novamente.")
             self._exchange(
                 {
@@ -205,19 +227,29 @@ class OAuth:
 
     def access_token(self, force=False):
         with self.lock:
-            if (
-                not force
-                and self.tokens.get("access_token")
-                and self.tokens.get("expires_at", 0) > time.time() + 60
-            ):
+            if not force and usable(self.tokens):
                 return self.tokens["access_token"]
-            old = self.tokens.get("refresh_token")
+            stored = self.load()
+            if stored.get("refresh_token") != self.tokens.get("refresh_token"):
+                # Another holder rotated the connection, retiring our refresh token: use its tokens.
+                self.tokens = stored
+                if usable(stored):
+                    return stored["access_token"]
+            current = self.tokens
+            old = current.get("refresh_token")
             if not old:
                 raise ConnectionError("Conecte sua conta Assinafy nas configurações.")
+            # Discovery sends no token, so its failures must not cost the connection.
+            if self.metadata is None:
+                self.discover()
             # Invalidate on disk before attempting the single-use exchange, including on crash.
             self._replace({})
             try:
                 result = self._exchange({"grant_type": "refresh_token", "refresh_token": old})
+            except UNSENT:
+                # The token never reached the server, so it is still the current one.
+                self._replace(current)
+                raise
             except Exception as exc:
                 self.tokens = {}
                 raise ConnectionError(
@@ -232,6 +264,8 @@ class OAuth:
 
     def disconnect(self):
         with self.lock:
+            # Revoke the stored tokens: another holder may have rotated ours.
+            self.tokens = self.load()
             token = self.tokens.get("refresh_token") or self.tokens.get("access_token")
             if token:
                 metadata = self.metadata or self.discover()
@@ -242,7 +276,8 @@ class OAuth:
                         "token": token,
                     },
                 )
-                if response.status_code != 200:
+                # 401 means the application itself was disabled, which already ended its tokens.
+                if response.status_code not in (200, 401):
                     raise ConnectionError("Não foi possível revogar a conexão. Tente novamente.")
             self._replace({})
 

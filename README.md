@@ -10,12 +10,13 @@ e enviado à Assinafy após confirmação.
    26.8 ou posterior, com Python/UNO 3.11+. Em distribuições Linux que separam
    esses componentes, instale também o provedor de scripts Python do LibreOffice.
 2. Abra **Ferramentas → Gerenciador de extensões → Adicionar** e selecione
-   o arquivo `assinafy-1.0.1.oxt` baixado da distribuição Assinafy.
+   o arquivo `assinafy-1.1.0.oxt` baixado da distribuição Assinafy.
 3. Reinicie o LibreOffice. O menu **Assinafy** aparece nos quatro editores.
 4. Abra **Assinafy → Conectar conta** e clique em **Conectar**.
 
 O pacote contém o SDK Assinafy e as dependências de rede. O uso normal da extensão
-não exige instalar pacotes Python separadamente.
+não exige instalar pacotes Python separadamente. A rede deve permitir conexões
+HTTPS com TLS 1.2 ou superior aos endereços da Assinafy.
 
 A distribuição usa produção por padrão, com o identificador público da aplicação
 e a URL HTTPS de retorno incorporados. O usuário final apenas conecta sua conta.
@@ -42,9 +43,9 @@ flowchart LR
 Escolha o workspace que a extensão poderá acessar. A conexão deve autorizar
 exatamente um workspace. A extensão não recebe a senha da conta.
 
-As permissões solicitadas são `account:read`, `documents:read`,
-`documents:write` e `offline_access`. A falta de permissão de escrita impede
-upload, envio, reenvio e exclusão.
+As permissões solicitadas são `documents:read`, `documents:write` e
+`offline_access`. A falta de permissão de escrita impede upload, envio, reenvio
+e exclusão.
 
 Para manter a conexão entre sessões, configure uma senha mestra no gerenciador
 de senhas do LibreOffice, nas opções de segurança. No macOS, as opções ficam em
@@ -146,10 +147,10 @@ Após autorizar no navegador, a página de retorno encaminha a conexão ao
 LibreOffice neste computador. Mantenha o LibreOffice aberto durante esse
 processo. Se a conexão expirar, inicie novamente pelo menu **Conectar conta**.
 
-A extensão solicita acesso ao workspace, leitura e envio de documentos e
-renovação da conexão. Ela não solicita acesso a templates. Os documentos são
-enviados somente após a confirmação do upload; os convites dependem de uma
-segunda confirmação. O login e o consentimento acontecem no site da Assinafy.
+A extensão solicita leitura e envio de documentos e renovação da conexão. Ela
+não solicita acesso a templates. Os documentos são enviados somente após a
+confirmação do upload; os convites dependem de uma segunda confirmação. O login
+e o consentimento acontecem no site da Assinafy.
 
 ## Solução de problemas
 

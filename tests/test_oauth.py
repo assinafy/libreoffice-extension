@@ -1,11 +1,14 @@
+import json
 import ssl
 import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 import pytest
 from assinafy_libreoffice.config import SCOPES, Config, load_config
 from assinafy_libreoffice.oauth import ConnectionError, OAuth, challenge
+from assinafy_libreoffice.workflow import error_message
 
 CONFIG = Config(
     client_id="test-public-client",
@@ -30,7 +33,7 @@ def token_response():
         "refresh_token": "test-rotated",
         "token_type": "Bearer",
         "expires_in": 3600,
-        "scope": "account:read documents:read documents:write",
+        "scope": "documents:read documents:write",
     }
 
 
@@ -115,6 +118,7 @@ def test_callback_rejects_wrong_state_issuer_and_duplicates_before_exchange():
     def upstream(request):
         if request.method == "GET":
             return httpx.Response(200, json=metadata())
+        assert request.headers["content-type"] == "application/x-www-form-urlencoded"
         body = parse_qs(request.content.decode())
         exchanges.append(body)
         assert body["redirect_uri"] == [CONFIG.redirect_uri]
@@ -131,12 +135,7 @@ def test_callback_rejects_wrong_state_issuer_and_duplicates_before_exchange():
         assert authorization["redirect_uri"] == [CONFIG.redirect_uri]
         assert authorization["resource"] == [CONFIG.resource]
         assert authorization["scope"] == [SCOPES]
-        assert set(SCOPES.split()) == {
-            "account:read",
-            "documents:read",
-            "documents:write",
-            "offline_access",
-        }
+        assert set(SCOPES.split()) == {"documents:read", "documents:write", "offline_access"}
         assert authorization["code_challenge_method"] == ["S256"]
         state = authorization["state"][0]
         port = state.split(".")[1]
@@ -150,6 +149,8 @@ def test_callback_rejects_wrong_state_issuer_and_duplicates_before_exchange():
                         {**valid, "state": "wrong"},
                         {**valid, "state": "wrong-\u00e9"},
                         {**valid, "iss": "wrong"},
+                        {"state": state, "code": "single-use-code"},
+                        {"state": state, "error": "access_denied"},
                         {**valid, "code": ""},
                         {**valid, "code": " \t"},
                         {**valid, "error": "access_denied"},
@@ -228,6 +229,63 @@ def test_refresh_serialized_persisted_before_use():
     oauth.close()
 
 
+def test_holders_of_one_connection_never_replay_a_rotated_token():
+    store, server, sent, raced = {"tokens": '{"refresh_token": "r0"}'}, {"live": "r0"}, [], []
+
+    def racing(request):
+        if racer.ident is None:
+            # second needs a token while first's refresh is in flight: it must wait its turn.
+            racer.start()
+            racer.join(0.2)
+        return upstream(request)
+
+    def upstream(request):
+        body = parse_qs(request.content.decode())
+        if request.url.path.endswith("/revoke"):
+            sent.append(body["token"][0])
+            if body["token"][0] == server["live"]:
+                server["live"] = None
+            return httpx.Response(200, json={})
+        sent.append(body["refresh_token"][0])
+        if body["refresh_token"][0] != server["live"]:
+            server["live"] = None  # reusing a retired refresh token ends the whole connection
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        server["live"] = f"r{len(sent)}"
+        return httpx.Response(
+            200,
+            json={
+                **token_response(),
+                "access_token": f"a{len(sent)}",
+                "refresh_token": f"r{len(sent)}",
+            },
+        )
+
+    def save(tokens):
+        store["tokens"] = json.dumps(tokens)
+
+    def load():
+        return json.loads(store["tokens"])
+
+    first, second = (
+        OAuth(CONFIG, save, load(), httpx.MockTransport(handler), load=load)
+        for handler in (racing, upstream)
+    )
+    first.metadata = second.metadata = metadata()
+    racer = threading.Thread(target=lambda: raced.append(second.access_token()))
+    try:
+        assert first.access_token() == "a1"
+        racer.join()
+        # second held r0, which first retired: it used the stored tokens and cleared nothing.
+        assert raced == ["a1"] and sent == ["r0"] and load()["refresh_token"] == "r1"
+        assert second.access_token(force=True) == "a2"
+        # first still holds r1: disconnecting revokes the current token instead.
+        first.disconnect()
+        assert sent == ["r0", "r1", "r2"] and server["live"] is None and load() == {}
+    finally:
+        first.close()
+        second.close()
+
+
 def test_refresh_timeout_never_replays_old_token():
     calls, saved = [], []
 
@@ -245,6 +303,147 @@ def test_refresh_timeout_never_replays_old_token():
     oauth.close()
 
 
+def test_refresh_that_never_left_keeps_the_current_token():
+    sent, saved = [], []
+
+    def upstream(request):
+        sent.append(parse_qs(request.content.decode())["refresh_token"])
+        raise httpx.ConnectError("[SSL: UNSUPPORTED_PROTOCOL] unsupported protocol")
+
+    tokens = {"access_token": "expired", "expires_at": 0, "refresh_token": "current"}
+    oauth = OAuth(CONFIG, saved.append, tokens, httpx.MockTransport(upstream))
+    oauth.metadata = metadata()
+    for _ in range(2):
+        with pytest.raises(httpx.ConnectError):
+            oauth.access_token()
+    assert sent == [["current"], ["current"]]
+    assert saved == [{}, tokens, {}, tokens]
+    assert oauth.tokens == tokens
+    oauth.close()
+
+
+def test_proxy_refusing_the_tunnel_keeps_the_current_token():
+    received, saved = [], []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def do_CONNECT(self):
+            received.append(self.requestline + "\n" + str(self.headers))
+            self.send_response(407)
+            self.send_header("Proxy-Authenticate", 'Basic realm="proxy"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    tokens = {"access_token": "expired", "expires_at": 0, "refresh_token": "current"}
+    with HTTPServer(("127.0.0.1", 0), Proxy) as proxy:
+        threading.Thread(target=proxy.serve_forever, daemon=True).start()
+        transport = httpx.HTTPTransport(proxy=f"http://127.0.0.1:{proxy.server_port}")
+        oauth = OAuth(CONFIG, saved.append, tokens, transport)
+        oauth.metadata = metadata()
+        try:
+            with pytest.raises(httpx.ProxyError) as exc:
+                oauth.access_token()
+        finally:
+            oauth.close()
+            proxy.shutdown()
+    assert len(received) == 1 and received[0].startswith("CONNECT api.assinafy.com.br:443 ")
+    assert "current" not in received[0]
+    assert saved == [{}, tokens] and oauth.tokens == tokens
+    assert "Verifique a rede" in error_message(exc.value)
+
+
+def test_discovery_failure_keeps_the_current_token():
+    posts, saved = [], []
+
+    def upstream(request):
+        if request.method == "GET":
+            return httpx.Response(503)
+        posts.append(request)
+        return httpx.Response(200, json=token_response())
+
+    tokens = {"access_token": "expired", "expires_at": 0, "refresh_token": "current"}
+    oauth = OAuth(CONFIG, saved.append, tokens, httpx.MockTransport(upstream))
+    with pytest.raises(httpx.HTTPStatusError):
+        oauth.access_token()
+    assert not posts and not saved and oauth.tokens == tokens
+    oauth.close()
+
+
+@pytest.mark.parametrize("refresh", [None, "", "current"])
+def test_refresh_without_a_new_refresh_token_requires_reconnect(refresh):
+    sent, saved = [], []
+
+    def upstream(request):
+        sent.append(request)
+        data = {**token_response(), "refresh_token": refresh}
+        return httpx.Response(200, json={k: v for k, v in data.items() if v is not None})
+
+    tokens = {"access_token": "expired", "expires_at": 0, "refresh_token": "current"}
+    oauth = OAuth(CONFIG, saved.append, tokens, httpx.MockTransport(upstream))
+    oauth.metadata = metadata()
+    with pytest.raises(ConnectionError, match="Reconecte a conta") as exc:
+        oauth.access_token()
+    message = f"{exc.value} {exc.value.__cause__}"
+    assert "current" not in message and "test-access" not in message
+    with pytest.raises(ConnectionError):
+        oauth.access_token()
+    assert len(sent) == 1 and saved == [{}] and oauth.tokens == {}
+    oauth.close()
+
+
+@pytest.mark.parametrize("grant", ["authorization_code", "refresh_token"])
+def test_token_endpoint_is_never_retried(grant):
+    calls, saved = [], []
+
+    def upstream(request):
+        calls.append(request)
+        raise httpx.ReadTimeout("maybe processed")
+
+    oauth = OAuth(CONFIG, saved.append, transport=httpx.MockTransport(upstream))
+    oauth.metadata = metadata()
+    with pytest.raises(httpx.ReadTimeout):
+        oauth._exchange({"grant_type": grant})
+    assert len(calls) == 1 and not saved
+    oauth.close()
+
+
+@pytest.mark.parametrize(
+    ("error", "message"), [("access_denied", "cancelada"), ("invalid_scope", "invalid_scope")]
+)
+def test_authorization_errors_stop_before_exchange(error, message):
+    posts, browsers = [], []
+
+    def upstream(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=metadata())
+        posts.append(request)
+        return httpx.Response(200, json=token_response())
+
+    def open_browser(url):
+        state = parse_qs(urlsplit(url).query)["state"][0]
+        callback = f"http://127.0.0.1:{state.split('.')[1]}/callback"
+        params = {"state": state, "iss": CONFIG.issuer, "error": error}
+
+        def browser():
+            with httpx.Client(trust_env=False, timeout=5) as client:
+                client.get(callback, params=params)
+
+        browsers.append(threading.Thread(target=browser))
+        browsers[-1].start()
+
+    oauth = OAuth(CONFIG, lambda _: None, transport=httpx.MockTransport(upstream))
+    try:
+        with pytest.raises(ConnectionError, match=message):
+            oauth.connect(open_browser, timeout=5)
+    finally:
+        for thread in browsers:
+            thread.join(timeout=5)
+        oauth.close()
+    assert not posts
+
+
 def test_refresh_storage_failure_sends_no_request():
     requests = []
 
@@ -257,6 +456,7 @@ def test_refresh_storage_failure_sends_no_request():
         {"refresh_token": "old"},
         httpx.MockTransport(lambda req: requests.append(req)),
     )
+    oauth.metadata = metadata()
     with pytest.raises(OSError):
         oauth.access_token()
     assert requests == []
@@ -290,20 +490,27 @@ def test_invalid_token_response(changes):
     oauth.close()
 
 
-def test_revocation_and_no_id_token_usage():
+@pytest.mark.parametrize("status", [200, 401, 500])
+def test_revocation_and_no_id_token_usage(status):
     saved, calls = [], []
 
     def upstream(request):
+        assert request.headers["content-type"] == "application/x-www-form-urlencoded"
         calls.append(parse_qs(request.content.decode()))
-        return httpx.Response(200, json={})
+        return httpx.Response(status, json={})
 
     oauth = OAuth(
         CONFIG, saved.append, {"refresh_token": "test-refresh"}, httpx.MockTransport(upstream)
     )
     oauth.metadata = metadata()
-    oauth.disconnect()
-    assert calls[0]["token"] == ["test-refresh"] and saved == [{}]
-    assert not oauth.tokens
+    if status == 500:
+        with pytest.raises(ConnectionError):
+            oauth.disconnect()
+        assert oauth.tokens and not saved
+    else:
+        oauth.disconnect()
+        assert saved == [{}] and not oauth.tokens
+    assert calls == [{"client_id": [CONFIG.client_id], "token": ["test-refresh"]}]
     oauth.close()
 
 

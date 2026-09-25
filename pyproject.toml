@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "assinafy-libreoffice"
-version = "1.0.1"
+version = "1.1.0"
 description = "Assinafy document signing for LibreOffice"
 requires-python = ">=3.11"
-dependencies = ["assinafy==1.6.3"]
+dependencies = ["assinafy==1.9.2"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.12", "build>=1.2"]
