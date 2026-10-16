@@ -4,9 +4,9 @@ ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl python3 xvfb xauth fonts-liberation \
-    && case "$TARGETARCH" in arm64) arch=aarch64 ;; amd64) arch=x86_64 ;; *) exit 1 ;; esac \
+    && case "$TARGETARCH" in arm64) arch=aarch64 ;; amd64) arch=x86-64 ;; *) exit 1 ;; esac \
     && archive="LibreOffice_26.8.0_Linux_${arch}_deb.tar.gz" \
-    && url="https://download.documentfoundation.org/libreoffice/stable/26.8.0/deb/${arch}/${archive}" \
+    && url="https://download.documentfoundation.org/libreoffice/stable/26.8.0/deb/$(case "$TARGETARCH" in amd64) echo x86_64 ;; arm64) echo aarch64 ;; esac)/${archive}" \
     && cd /tmp \
     && curl -fsSL "$url" -o "$archive" \
     && curl -fsSL "$url.sha256" -o "$archive.sha256" \
