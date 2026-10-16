@@ -2,6 +2,7 @@ import json
 import ssl
 import time
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -47,7 +48,7 @@ def backend(monkeypatch):
         elif path.endswith("estimate-cost"):
             data = {"has_sufficient_resources": True, "total_credits": 0}
         elif path == "accounts/account1/signers":
-            data = signer if req.method == "POST" else []
+            data = signer if req.method == "POST" else doc.get("contacts", [])
         elif path == "accounts/account1/signers/signer1":
             data = signer
         elif path == "documents/doc1/assignments":
@@ -159,6 +160,24 @@ def test_partial_failure_preserves_id(backend):
     assert exc.value.context["document_id"] == "doc1"
     assert records == [("doc1", "uploaded")]
     assert not any(method == "DELETE" for method, _, _ in events)
+
+
+@pytest.mark.parametrize("status", [400, 403, 429])
+def test_prepared_document_preserves_actionable_api_errors(backend, status):
+    workflow, _, _, _, failures = backend
+    failures[("POST", "documents/doc1/assignments/estimate-cost")] = status
+    with pytest.raises(AssinafyError) as exc:
+        workflow.prepare(PDF, "test.pdf", [RECIPIENT])
+    assert exc.value.context["document_id"] == "doc1"
+    assert error_message(exc.value) == error_message(exc.value.__cause__)
+
+
+def test_contact_conflict_remains_actionable(backend):
+    workflow, _, _, doc, _ = backend
+    doc["contacts"] = [{"id": "signer1", "full_name": "Different Name", "email": CONTACT}]
+    with pytest.raises(AssinafyError) as exc:
+        workflow.send("doc1", [RECIPIENT])
+    assert "outro nome" in error_message(exc.value)
 
 
 @pytest.mark.parametrize("status", ["uploaded", "sending", "check_status", "sent"])
@@ -276,7 +295,7 @@ def test_resume_estimates_existing_document_without_another_upload(backend):
     assert not any(path == "accounts/account1/documents" for _, path, _ in events)
 
 
-def test_certificate_updates_identity_before_assignment(backend):
+def test_certificate_creates_identity_before_assignment(backend):
     workflow, events, _, _, _ = backend
     recipient = replace(
         RECIPIENT, government_id="00000000000", verification_method="DigitalCertificate"
@@ -287,13 +306,8 @@ def test_certificate_updates_identity_before_assignment(backend):
         for method, path, body in events
         if method == "POST" and path == "accounts/account1/signers"
     )
-    assert "government_id" not in creation
-    identity = next(
-        json.loads(body)
-        for method, path, body in events
-        if method == "PUT" and path.endswith("signers/signer1")
-    )
-    assert identity == {"government_id": "00000000000"}
+    assert creation["government_id"] == "00000000000"
+    assert not any(method == "PUT" for method, _, _ in events)
     assignment = json.loads(events[-1][2])
     assert assignment["signers"][0]["verification_method"] == "DigitalCertificate"
 
@@ -320,3 +334,99 @@ def test_signed_pdf_may_be_larger_than_upload_limit():
     with pytest.raises(ValueError):
         validate_pdf(data)
     validate_pdf(data, upload=False)
+
+
+@pytest.mark.parametrize(
+    ("method", "channel"),
+    [
+        ("Email", "Email"),
+        ("Whatsapp", "Whatsapp"),
+        ("DigitalCertificate", "Email"),
+        ("DigitalCertificate", "Whatsapp"),
+        ("IdDocumentFaceMatchBasic", "Email"),
+        ("IdDocumentFaceMatchBasic", "Whatsapp"),
+    ],
+)
+def test_all_signing_and_notification_payloads(backend, method, channel):
+    workflow, events, _, _, _ = backend
+    recipient = replace(
+        RECIPIENT,
+        verification_method=method,
+        notification_method=channel,
+        whatsapp_phone_number="+15555550100" if channel == "Whatsapp" else "",
+        government_id="00000000000" if method in {
+            "DigitalCertificate", "IdDocumentFaceMatchBasic"
+        } else "",
+    )
+    workflow.estimate("doc1", [recipient])
+    workflow.send("doc1", [recipient])
+    pricing = {"verification_method": method, "notification_methods": [channel]}
+    estimate = next(json.loads(b) for _, p, b in events if p.endswith("estimate-cost"))
+    assert estimate == {"method": "virtual", "signers": [pricing]}
+    assignment = json.loads(events[-1][2])
+    assert assignment["signers"] == [{"id": "signer1", "step": 1, **pricing}]
+    contact = next(
+        json.loads(b) for m, p, b in events
+        if m == "POST" and p == "accounts/account1/signers"
+    )
+    if recipient.whatsapp_phone_number:
+        assert contact["whatsapp_phone_number"] == recipient.whatsapp_phone_number
+    if recipient.government_id:
+        assert contact["government_id"] == recipient.government_id
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"verification_method": "Whatsapp"},
+        {"verification_method": "Email", "notification_method": "Whatsapp"},
+        {"verification_method": "Whatsapp", "notification_method": "Email"},
+        {"verification_method": "IdDocumentFaceMatchBasic"},
+        {"notification_method": "SMS"},
+        {"whatsapp_phone_number": "555-0100"},
+    ],
+)
+def test_invalid_channels_fail_before_upload(backend, options):
+    workflow, events, _, _, _ = backend
+    with pytest.raises(ValueError):
+        workflow.prepare(PDF, "test.pdf", [replace(RECIPIENT, **options)])
+    assert not events
+
+
+def test_expiration_requires_at_least_an_hour_before_upload(backend):
+    workflow, events, _, _, _ = backend
+    for delta in (timedelta(days=-1), timedelta(minutes=59)):
+        expiration = (datetime.now(UTC) + delta).isoformat()
+        with pytest.raises(ValueError, match="hora"):
+            workflow.prepare(PDF, "test.pdf", [RECIPIENT], expires_at=expiration)
+    assert not events
+
+
+@pytest.mark.parametrize("field", ["government_id", "whatsapp_phone_number"])
+def test_existing_contact_details_are_not_overwritten(backend, field):
+    workflow, events, _, doc, _ = backend
+    doc["contacts"] = [{
+        "id": "signer1", "full_name": RECIPIENT.full_name, "email": CONTACT,
+        field: "different-existing-value",
+    }]
+    recipient = replace(RECIPIENT, **{field: (
+        "00000000000" if field == "government_id" else "+15555550100"
+    )})
+    with pytest.raises(AssinafyError):
+        workflow.send("doc1", [recipient])
+    assert not any(m in {"POST", "PUT", "DELETE"} for m, _, _ in events)
+
+
+@pytest.mark.parametrize("existing_id", [None, "000.000.000-00"])
+def test_existing_contact_identity_is_completed_or_reused(backend, existing_id):
+    workflow, events, _, doc, _ = backend
+    doc["contacts"] = [{
+        "id": "signer1", "full_name": RECIPIENT.full_name, "email": CONTACT,
+        "government_id": existing_id,
+    }]
+    workflow.send("doc1", [replace(
+        RECIPIENT, verification_method="DigitalCertificate", government_id="00000000000"
+    )])
+    updates = [json.loads(b) for m, _, b in events if m == "PUT"]
+    assert updates == ([{"government_id": "00000000000"}] if existing_id is None else [])
+    assert not any(m == "POST" and p.endswith("/signers") for m, p, _ in events)

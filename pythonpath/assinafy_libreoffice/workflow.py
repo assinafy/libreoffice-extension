@@ -6,9 +6,10 @@ import hashlib
 import re
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from assinafy import ApiError, AssinafyClient, AssinafyError, ValidationError
-from assinafy.utils import validate_datetime, validate_email
+from assinafy.utils import validate_datetime, validate_email, validate_signer_methods
 
 from .oauth import UNSENT, ConnectionError
 
@@ -20,6 +21,8 @@ class Recipient:
     government_id: str = ""
     verification_method: str = "Email"
     step: int = 1
+    whatsapp_phone_number: str = ""
+    notification_method: str = ""
 
     def validate(self):
         if not isinstance(self.full_name, str) or not self.full_name.strip():
@@ -30,17 +33,39 @@ class Recipient:
             validate_email(self.email)
         except ValidationError as exc:
             raise ValueError("Informe um e-mail válido para cada signatário.") from exc
-        if self.verification_method not in {"Email", "DigitalCertificate"}:
-            raise ValueError("Selecione Email ou DigitalCertificate.")
+        try:
+            validate_signer_methods(
+                self.verification_method, self.pricing()["notification_methods"]
+            )
+        except ValidationError as exc:
+            raise ValueError("Selecione métodos de verificação e notificação compatíveis.") from exc
+        if not isinstance(self.whatsapp_phone_number, str) or (
+            self.whatsapp_phone_number
+            and not re.fullmatch(r"\+[1-9][0-9]{1,14}", self.whatsapp_phone_number)
+        ):
+            raise ValueError("Informe o WhatsApp no formato internacional E.164, com + e país.")
+        if (
+            self.pricing()["notification_methods"] == ["Whatsapp"]
+            and not self.whatsapp_phone_number
+        ):
+            raise ValueError("A notificação por WhatsApp exige um número de telefone.")
         if isinstance(self.step, bool) or not isinstance(self.step, int) or self.step < 1:
             raise ValueError("A etapa de assinatura deve ser um inteiro positivo.")
         if not isinstance(self.government_id, str) or len(self.government_id) > 32:
             raise ValueError("CPF/CNPJ inválido.")
-        if self.verification_method == "DigitalCertificate" and not self.government_id.strip():
-            raise ValueError("Assinatura com certificado exige CPF/CNPJ.")
+        if self.verification_method in {"DigitalCertificate", "IdDocumentFaceMatchBasic"}:
+            if not self.government_id.strip():
+                raise ValueError("Assinatura com certificado ou biometria exige CPF/CNPJ.")
+            if self.verification_method == "IdDocumentFaceMatchBasic" and not re.fullmatch(
+                r"[0-9]{11}", re.sub(r"[.\-\s]", "", self.government_id)
+            ):
+                raise ValueError("A biometria exige um CPF de 11 dígitos.")
 
     def pricing(self):
-        return {"verification_method": self.verification_method, "notification_methods": ["Email"]}
+        channel = self.notification_method or (
+            "Whatsapp" if self.verification_method == "Whatsapp" else "Email"
+        )
+        return {"verification_method": self.verification_method, "notification_methods": [channel]}
 
 
 def validate_request(recipients, message="", expires_at=None):
@@ -52,6 +77,10 @@ def validate_request(recipients, message="", expires_at=None):
         validate_datetime(expires_at, "expires_at", allow_none=True)
     except ValidationError as exc:
         raise ValueError("Informe uma expiração ISO 8601 com fuso horário.") from exc
+    if expires_at and datetime.fromisoformat(
+        expires_at[:-1] + "+00:00" if expires_at[-1] in "Zz" else expires_at
+    ) < datetime.now(UTC) + timedelta(hours=1):
+        raise ValueError("A expiração deve estar pelo menos uma hora no futuro.")
     emails = set()
     for recipient in recipients:
         recipient.validate()
@@ -86,7 +115,7 @@ def require_id(data):
 def error_message(error):
     if isinstance(error, (ConnectionError, ValueError)):
         return str(error)
-    if isinstance(error, UNSENT) or isinstance(error.__cause__, UNSENT):
+    if isinstance(error, UNSENT) or isinstance(error.__cause__ or error.__context__, UNSENT):
         return (
             "Não foi possível abrir uma conexão segura (TLS 1.2 ou superior) com a Assinafy. "
             "Verifique a rede e tente novamente."
@@ -101,6 +130,8 @@ def error_message(error):
         }.get(
             error.status_code, "A Assinafy está indisponível. Consulte o status antes de reenviar."
         )
+    if isinstance(error, AssinafyError) and error.__cause__ is not None:
+        return error_message(error.__cause__)
     return "A operação não foi concluída. Consulte Envios recentes antes de tentar novamente."
 
 
@@ -156,7 +187,7 @@ class Workflow:
             raise ValueError("Página inválida.")
         return self.call(
             lambda c: c.documents.list(
-                {"page": page, "per_page": 20, "search": search, "sort": "updated_at"}
+                {"page": page, "per_page": 20, "search": search, "sort": "-updated_at"}
             )
         )
 
@@ -225,31 +256,49 @@ class Workflow:
         try:
             signers = []
             for recipient in recipients:
+                details = {
+                    key: value for key, value in {
+                        "government_id": recipient.government_id,
+                        "whatsapp_phone_number": recipient.whatsapp_phone_number,
+                    }.items() if value
+                }
                 existing = self.call(lambda c, r=recipient: c.signers.find_by_email(r.email))
                 if existing:
                     if existing.get("full_name", "").strip() != recipient.full_name.strip():
                         raise ValueError(
                             "O contato existente tem outro nome. Corrija-o na Assinafy."
                         )
+                    for key, value in details.items():
+                        previous = existing.get(key)
+                        if previous and re.sub(r"[.\-/\s]", "", previous).upper() != re.sub(
+                            r"[.\-/\s]", "", value
+                        ).upper():
+                            raise ValueError(
+                                "O contato existente tem outro CPF/CNPJ ou WhatsApp. "
+                                "Corrija-o na Assinafy."
+                            )
+                    missing = {k: v for k, v in details.items() if not existing.get(k)}
                     signer = existing
+                    if missing:
+                        signer_id = require_id(existing)
+                        signer = self.call(
+                            lambda c, sid=signer_id, data=missing: c.signers.update(
+                                sid, data
+                            ),
+                            write=True,
+                        )
                 else:
                     signer = self.call(
-                        lambda c, r=recipient: c.signers.create(
+                        lambda c, r=recipient, data=details: c.signers.create(
                             {
                                 "full_name": r.full_name.strip(),
                                 "email": r.email.strip(),
+                                **data,
                             }
                         ),
                         write=True,
                     )
                 signer_id = require_id(signer)
-                if recipient.government_id:
-                    self.call(
-                        lambda c, sid=signer_id, r=recipient: c.signers.update(
-                            sid, {"government_id": r.government_id}
-                        ),
-                        write=True,
-                    )
                 signers.append({"id": signer_id, "step": recipient.step, **recipient.pricing()})
             payload = {"method": "virtual", "signers": signers, "message": message}
             if expires_at:

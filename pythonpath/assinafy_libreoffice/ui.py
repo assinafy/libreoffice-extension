@@ -377,26 +377,39 @@ class App:
         raise ValueError("Abra um documento no Writer, Calc, Impress ou Draw.")
 
     def recipient_dialog(self):
-        d = Dialog(self, "Adicionar signatário", 370, 260)
-        d.edit("name", "~Nome completo", "", 14, 12, 340)
-        d.edit("email", "~E-mail", "", 14, 55, 340)
-        d.edit("government", "CPF/CNPJ (obrigatório para certificado)", "", 14, 98, 340)
-        d.label("method_label", "~Verificação", 14, 141, 245)
+        d = Dialog(self, "Adicionar signatário", 420, 350)
+        d.edit("name", "~Nome completo", "", 14, 12, 392)
+        d.edit("email", "~E-mail", "", 14, 55, 392)
+        d.edit("phone", "~WhatsApp (E.164, com + e código do país)", "", 14, 98, 392)
+        d.edit("government", "CPF/CNPJ (certificado); CPF (biometria)", "", 14, 141, 392)
+        methods = (
+            ("Email", "E-mail"),
+            ("Whatsapp", "WhatsApp"),
+            ("DigitalCertificate", "Certificado ICP-Brasil (A1/A3)"),
+            ("IdDocumentFaceMatchBasic", "Biometria (documento + face)"),
+        )
+        d.label("method_label", "~Verificação", 14, 184, 290)
         d.add(
             "ListBox",
             "method",
             14,
-            157,
-            245,
+            200,
+            290,
             20,
             Dropdown=True,
-            StringItemList=("Email", "DigitalCertificate"),
+            StringItemList=tuple(label for _, label in methods),
             SelectedItems=(0,),
         )
-        d.edit("step", "~Etapa", "1", 273, 141, 81)
-        d.label("hint", "Mesma etapa: paralelo. Etapas diferentes: sequencial.", 14, 186, 340)
-        d.button("add", "Adicionar", 164, 224, kind=1)
-        d.button("cancel", "Cancelar", 264, 224, kind=2)
+        d.edit("step", "~Etapa", "1", 320, 184, 86)
+        d.label("notification_label", "~Notificação do convite", 14, 231, 392)
+        d.add(
+            "ListBox", "notification", 14, 247, 290, 20,
+            Dropdown=True, StringItemList=("Automática", "E-mail", "WhatsApp"),
+            SelectedItems=(0,),
+        )
+        d.label("hint", "Mesma etapa: paralelo. Certificado: sozinho na etapa.", 14, 279, 392, 25)
+        d.button("add", "Adicionar", 216, 314, kind=1)
+        d.button("cancel", "Cancelar", 316, 314, kind=2)
         if d.execute() != 1:
             return None
         values = d.values
@@ -404,8 +417,10 @@ class App:
             values["name"]["Text"].strip(),
             values["email"]["Text"].strip(),
             values["government"]["Text"].strip(),
-            values["method"]["StringItemList"][values["method"]["SelectedItems"][0]],
+            methods[values["method"]["SelectedItems"][0]][0],
             int(values["step"]["Text"]),
+            values["phone"]["Text"].strip(),
+            ("", "Email", "Whatsapp")[values["notification"]["SelectedItems"][0]],
         )
         recipient.validate()
         return recipient
@@ -425,7 +440,8 @@ class App:
 
         def refresh():
             listing.getModel().StringItemList = tuple(
-                f"{r.step}. {r.full_name} <{r.email}> — {r.verification_method}" for r in recipients
+                f"{r.step}. {r.full_name} <{r.email}> — {r.verification_method} / "
+                f"{r.pricing()['notification_methods'][0]}" for r in recipients
             )
 
         def add():
@@ -566,7 +582,9 @@ class App:
                 return {"status": "cancelled"}
             summary = "\n".join(
                 f"Etapa {r.step}: {r.full_name} <{r.email}>\n"
-                f"  {r.verification_method} {r.government_id}"
+                f"  {r.verification_method} {r.government_id}\n"
+                f"  Notificação: {r.pricing()['notification_methods'][0]} "
+                f"{r.whatsapp_phone_number}"
                 for r in recipients
             )
             if not document_id and not self.box(
@@ -596,7 +614,7 @@ class App:
             return {"status": "prepared", "document_id": document_id}
         cost = estimate.get("total_credits", estimate.get("credits", "—"))
         if not self.box(
-            f"Enviar convites por e-mail agora?\n\n{summary}\n\n"
+            f"Enviar os convites pelos canais indicados agora?\n\n{summary}\n\n"
             f"Mensagem: {message}\nExpiração: {expires_at or 'sem expiração'}\n"
             f"Créditos estimados: {cost}\nDocumento: {document_id}",
             query=True,
@@ -665,11 +683,6 @@ class App:
             460,
             128,
             Dropdown=False,
-            StringItemList=tuple(
-                f"{s.get('step', 1)}. {s.get('full_name', '')} "
-                f"<{s.get('email', '')}> · " + ("assinado" if s.get("completed") else "pendente")
-                for s in signers
-            ),
         )
 
         def refresh():
@@ -680,6 +693,7 @@ class App:
             listing.getModel().StringItemList = tuple(
                 f"{s.get('step', 1)}. {s.get('full_name', '')} <{s.get('email', '')}> · "
                 + ("assinado" if s.get("completed") else "pendente")
+                + " · " + str(s.get("identity_verification_status") or "")
                 for s in signers
             )
             d.controls["resume"].setEnable(not bool(doc.get("assignment")))
@@ -700,12 +714,31 @@ class App:
             if estimate.get("has_sufficient_resources") is not True:
                 raise ValueError("O workspace não tem recursos suficientes para reenviar.")
             if self.box(
-                "Reenviar convite para " + signer.get("email", signer["id"]) + "?\n"
+                "Reenviar convite para " + (signer.get("email") or signer["id"]) + "?\n"
+                "Canais: " + ", ".join(signer.get("notification_methods") or ["Email"]) + "\n"
+                "WhatsApp: " + (signer.get("whatsapp_phone_number") or "—") + "\n"
                 "Créditos estimados: " + str(estimate.get("total_credits", "—")),
                 query=True,
             ):
                 self.busy("Reenviando convite", lambda: workflow.resend(document_id, signer["id"]))
                 refresh()
+
+        def notifications():
+            selected = listing.getSelectedItemPos()
+            if selected < 0:
+                raise ValueError("Selecione um signatário.")
+            signer = signers[selected]
+            history = signer.get("notification_history") or []
+            self.box(
+                "Notificações: " + signer.get("full_name", "") + "\n"
+                + "Canais: " + ", ".join(signer.get("notification_methods") or ["Email"])
+                + "\n\n" + ("\n".join(
+                    f"{entry.get('event', '')}: {entry.get('status', '')} · "
+                    f"{entry.get('sent_at') or entry.get('failed_at') or '—'} · "
+                    f"{entry.get('error_code') or ''}"
+                    for entry in history
+                ) or "Nenhuma notificação registrada. Etapas futuras aguardam a anterior.")
+            )
 
         def download():
             artifact = artifacts[selection.getSelectedItemPos()][0]
@@ -764,11 +797,12 @@ class App:
         d.button("resume", "Retomar envio…", 114, 237, 120, fn=resume)
         d.button("resend", "Reenviar convite…", 244, 237, 130, fn=resend)
         d.button("delete", "Excluir…", 14, 269, fn=delete)
+        d.button("notifications", "Notificações…", 114, 269, 120, fn=notifications)
         d.button("close", "Fechar", 384, 269, kind=2)
         d.label(
             "hint",
-            "A assinatura e o uso do certificado A1/A3 acontecem no fluxo seguro "
-            "da Assinafy, aberto pelo próprio signatário.",
+            "Certificado A1/A3 e biometria acontecem no fluxo da Assinafy. "
+            "InReview/pending_identity_review: revise a identidade no painel Assinafy.",
             14,
             304,
             460,

@@ -48,6 +48,7 @@ def check_native(ctx, profile, output):
 
     app = App(ctx)
     real_execute = Dialog.execute
+    recipient_choice = {"method": 0, "notification": 0}
 
     def check_history():
         calls, buttons = [], {}
@@ -130,9 +131,12 @@ def check_native(ctx, profile, output):
                     return accepted
 
                 app.preview = preview
-                app.box = lambda text, query=False, error=False, answers=confirmations: (
-                    next(answers) if query else True
-                )
+                def box(text, query=False, error=False, answers=confirmations):
+                    if query and "canais indicados" in text:
+                        assert "Notificação:" in text and "Email" in text
+                    return next(answers) if query else True
+
+                app.box = box
                 result = app.send_flow(
                     [recipient], doc=doc, document_id="test-document" if resume else None
                 )
@@ -141,10 +145,77 @@ def check_native(ctx, profile, output):
             app.workflow = None
             app.preview, app.box = real_preview, real_box
 
+    def check_delivery_controls():
+        events, messages, buttons = [], [], {}
+        real_button, real_box = Dialog.button, app.box
+        signer = {
+            "id": "test-signer", "full_name": "Test Recipient",
+            "email": "recipient" + "@" + "example.invalid",
+            "notification_methods": ["Whatsapp"], "whatsapp_phone_number": "+15555550100",
+            "identity_verification_status": "InReview",
+            "notification_history": [{
+                "event": "signature_request", "status": "failed",
+                "error_code": "test-delivery-error", "failed_at": "2026-10-01T12:00:00Z",
+            }],
+        }
+        doc = {
+            "id": "test-document", "name": "Test PDF", "status": "pending_identity_review",
+            "assignment": {"id": "test-assignment", "signers": [signer]},
+        }
+
+        def resend(*args, estimate_only=False):
+            events.append("estimate" if estimate_only else "resend")
+            return {"has_sufficient_resources": True, "total_credits": 0.45}
+
+        app.workflow = SimpleNamespace(document=lambda _: doc, resend=resend)
+        answers = iter((False, True))
+
+        def box(text, query=False, error=False):
+            messages.append(text)
+            return next(answers) if query else True
+
+        def button(dialog, name, *args, **kwargs):
+            if name in {"notifications", "resend"}:
+                buttons[name] = kwargs["fn"]
+            return real_button(dialog, name, *args, **kwargs)
+
+        def execute(dialog):
+            if "signers" in dialog.controls:
+                def actions():
+                    listing = dialog.controls["signers"]
+                    assert "InReview" in listing.getModel().StringItemList[0]
+                    listing.selectItemPos(0, True)
+                    buttons["notifications"]()
+                    buttons["resend"]()
+                    assert events == ["estimate"], "Declined confirmation must not resend"
+                    buttons["resend"]()
+
+                listener = Shown(actions)
+                dialog.control.addWindowListener(listener)
+                dialog.listeners.append(listener)
+            return complete_dialog(dialog)
+
+        Dialog.button, Dialog.execute, app.box = button, execute, box
+        try:
+            app.document_details("test-document")
+            assert events == ["estimate", "estimate", "resend"]
+            assert "failed" in messages[0] and "test-delivery-error" in messages[0]
+            assert all("Whatsapp" in text for text in messages)
+            assert all("+15555550100" in text for text in messages[1:])
+        finally:
+            app.workflow = None
+            Dialog.button, Dialog.execute, app.box = real_button, complete_dialog, real_box
+
     def complete_dialog(dialog):
         if "name" in dialog.controls:
             dialog.controls["name"].Text = "Test Recipient"
             dialog.controls["email"].Text = "recipient" + "@" + "example.invalid"
+            dialog.controls["phone"].Text = "+15555550100"
+            dialog.controls["government"].Text = "00000000000"
+            dialog.controls["method"].getModel().SelectedItems = (recipient_choice["method"],)
+            dialog.controls["notification"].getModel().SelectedItems = (
+                recipient_choice["notification"],
+            )
         timer = threading.Timer(0.25, lambda: dialog.control.endDialog(1))
         listener = Shown(timer.start)
         dialog.control.addWindowListener(listener)
@@ -209,24 +280,27 @@ def check_native(ctx, profile, output):
                 png.unlink()
                 if module == "swriter":
                     print("Checking recipient controls", flush=True)
-                    recipient = app.recipient_dialog()
-                    assert (
-                        isinstance(recipient, Recipient) and recipient.full_name == "Test Recipient"
-                    )
+                    for method, notification, code, channel in (
+                        (0, 0, "Email", "Email"),
+                        (1, 0, "Whatsapp", "Whatsapp"),
+                        (2, 1, "DigitalCertificate", "Email"),
+                        (2, 2, "DigitalCertificate", "Whatsapp"),
+                        (3, 1, "IdDocumentFaceMatchBasic", "Email"),
+                        (3, 2, "IdDocumentFaceMatchBasic", "Whatsapp"),
+                    ):
+                        recipient_choice.update(method=method, notification=notification)
+                        recipient = app.recipient_dialog()
+                        assert isinstance(recipient, Recipient)
+                        assert recipient.full_name == "Test Recipient"
+                        assert recipient.verification_method == code
+                        assert recipient.pricing()["notification_methods"] == [channel]
+                        assert recipient.whatsapp_phone_number == "+15555550100"
                     print("Checking settings", flush=True)
                     app.settings()
                     print("Checking search thread and pagination", flush=True)
                     check_history()
-                    fake_doc = {
-                        "id": "test-document",
-                        "name": "Test PDF",
-                        "status": "metadata_ready",
-                        "assignment": None,
-                    }
-                    app.workflow = SimpleNamespace(document=lambda _, value=fake_doc: dict(value))
-                    print("Checking document controls", flush=True)
-                    app.document_details("test-document")
-                    app.workflow = None
+                    print("Checking delivery history, biometric status and resend", flush=True)
+                    check_delivery_controls()
                     app.save_tokens({"access_token": "test-session-value"})
                     assert app.load_tokens() == {"access_token": "test-session-value"}
                     # A master password set mid-session makes the next save persistent: the

@@ -10,7 +10,7 @@ e enviado à Assinafy após confirmação.
    26.8 ou posterior, com Python/UNO 3.11+. Em distribuições Linux que separam
    esses componentes, instale também o provedor de scripts Python do LibreOffice.
 2. Abra **Ferramentas → Gerenciador de extensões → Adicionar** e selecione
-   o arquivo `assinafy-1.1.0.oxt` baixado da distribuição Assinafy.
+   o arquivo `assinafy-1.2.0.oxt` baixado da distribuição Assinafy.
 3. Reinicie o LibreOffice. O menu **Assinafy** aparece nos quatro editores.
 4. Abra **Assinafy → Conectar conta** e clique em **Conectar**.
 
@@ -53,6 +53,9 @@ de senhas do LibreOffice, nas opções de segurança. No macOS, as opções fica
 mantém as credenciais apenas na sessão. **Desconectar** revoga a autorização e
 remove as credenciais locais.
 
+A conexão é renovada durante o uso. Cada renovação substitui o refresh token e
+inicia um novo prazo de 30 dias; após 30 dias sem renovação, conecte novamente.
+
 ### 2. Preparar os signatários
 
 Abra o documento e selecione **Assinafy → Enviar para assinatura**.
@@ -60,8 +63,16 @@ Adicione o nome completo e o e-mail de cada signatário. Escolha a verificação
 
 | Método | Dados e comportamento |
 | --- | --- |
-| `Email` | O signatário recebe um convite por e-mail. |
-| `DigitalCertificate` | Exige CPF/CNPJ; a assinatura com certificado ocorre no fluxo da Assinafy. |
+| E-mail (`Email`) | Código de verificação e convite por e-mail. |
+| WhatsApp (`Whatsapp`) | Código e convite por WhatsApp; exige telefone E.164, com `+` e código do país, e plano pago. |
+| Certificado ICP-Brasil (`DigitalCertificate`) | Exige CPF/CNPJ e recurso habilitado no plano. O signatário usa seu próprio certificado A1/A3 no fluxo da Assinafy. |
+| Biometria (`IdDocumentFaceMatchBasic`) | Exige CPF válido e recurso habilitado no plano. O signatário envia documento de identidade, foto e prova de vida no fluxo da Assinafy. |
+
+Escolha também a **Notificação do convite**. A opção automática usa e-mail,
+exceto na verificação WhatsApp, que exige WhatsApp. Certificado e biometria
+aceitam e-mail ou WhatsApp; cada signatário recebe exatamente um canal. O custo
+é consultado na API antes da confirmação. A extensão exige e-mail para cadastrar
+e reutilizar os contatos, inclusive quando o convite segue por WhatsApp.
 
 Signatários na mesma etapa assinam em paralelo. Etapas diferentes definem a
 ordem. Numere as etapas a partir de 1, sem pular números. Um signatário com
@@ -69,9 +80,10 @@ certificado deve estar sozinho em sua etapa. O mesmo
 e-mail não pode aparecer duas vezes no envio.
 
 Adicione uma mensagem opcional e, se necessário, uma expiração ISO 8601 com fuso
-horário, por exemplo `2030-12-31T23:59:00Z`. Contatos existentes são reutilizados
-quando o nome e o e-mail correspondem; divergências de nome devem ser corrigidas
-na Assinafy antes do envio.
+horário, por exemplo `2030-12-31T23:59:00Z`, pelo menos uma hora no futuro.
+Contatos existentes são reutilizados quando o nome e o e-mail correspondem.
+CPF/CNPJ e WhatsApp ausentes são preenchidos; divergências nos dados existentes
+devem ser corrigidas na Assinafy antes do envio.
 
 ### 3. Revisar o PDF
 
@@ -103,7 +115,14 @@ definir os signatários novamente, sem repetir o upload.
 Em **Assinafy → Envios recentes**, pesquise, navegue pelas páginas e selecione
 **Acompanhar**. **Atualizar** consulta o status do documento e de cada signatário.
 **Reenviar convite** consulta o custo e pede confirmação para o destinatário
-selecionado.
+selecionado, mostrando o canal e o telefone. **Notificações** mostra o histórico
+de envio e falha retornado pela API para o signatário selecionado. Os convites de
+etapas futuras aguardam a conclusão da etapa anterior.
+
+Na biometria, `InReview` indica que o workspace precisa revisar a identidade no
+painel Assinafy. O signatário pode assinar durante essa análise; o documento
+permanece em `pending_identity_review` até a decisão. A extensão não coleta
+documentos de identidade, selfies ou chaves de certificados.
 
 Depois de uma falha ou timeout, consulte o status antes de repetir o envio. Uma
 resposta perdida pode ter ocorrido depois de a Assinafy aceitar a operação.
@@ -167,6 +186,8 @@ e o consentimento acontecem no site da Assinafy.
 ## Referências
 
 - [API pública Assinafy](https://api.assinafy.com.br/v1/docs)
+- [Integração, payloads e desenvolvimento](docs/INTEGRATION.md)
+- [SDK Python Assinafy](https://github.com/assinafy/python-sdk)
 - [LibreOffice](https://www.libreoffice.org/)
 
 Licença MIT. As dependências conservam suas próprias licenças no pacote.

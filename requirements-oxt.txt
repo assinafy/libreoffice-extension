@@ -1,4 +1,4 @@
-assinafy==1.9.2
+assinafy==2.0.0
 anyio==4.15.1
 certifi==2026.7.22
 h11==0.16.0

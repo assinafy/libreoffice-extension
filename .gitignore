@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.coverage
 build/
 dist/
 *.oxt
@@ -13,3 +14,5 @@ dist/
 *.log
 *.egg-info/
 .DS_Store
+AGENTS.md
+CLAUDE.md
