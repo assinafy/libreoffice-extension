@@ -50,7 +50,10 @@ def build(config, output):
         shutil.copyfile(ROOT / name, target)
     package = Path("pythonpath/assinafy_libreoffice")
     (staging / package).mkdir(parents=True)
-    for name in ("__init__.py", "config.py", "oauth.py", "ui.py", "workflow.py"):
+    for name in (
+        "__init__.py", "config.py", "contracts.py", "oauth.py", "ui.py", "validation.py",
+        "workflow.py",
+    ):
         shutil.copyfile(ROOT / package / name, staging / package / name)
     (staging / "pythonpath/assinafy_libreoffice/deployment.json").write_text(
         json.dumps(

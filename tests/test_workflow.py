@@ -105,7 +105,9 @@ def test_prepare_and_send_contract(backend):
     }
     assert records[-1] == ("doc1", "sent")
     assert workflow.download("doc1") == PDF
-    assert workflow.resend("doc1", "signer1")["is_sent"]
+    assert workflow.resend(
+        "doc1", "signer1", confirmed=doc["assignment"]["signers"][0]
+    )["is_sent"]
 
 
 @pytest.mark.parametrize(
@@ -126,7 +128,7 @@ def test_invalid_contacts_fail_before_upload(backend, recipient):
 
 
 def test_order_certificate_validation():
-    cert = replace(RECIPIENT, government_id="00000000000", verification_method="DigitalCertificate")
+    cert = replace(RECIPIENT, government_id="10000098744", verification_method="DigitalCertificate")
     other = replace(RECIPIENT, email="second" + "@" + "example.invalid")
     with pytest.raises(ValueError):
         validate_request([cert, other])
@@ -298,7 +300,7 @@ def test_resume_estimates_existing_document_without_another_upload(backend):
 def test_certificate_creates_identity_before_assignment(backend):
     workflow, events, _, _, _ = backend
     recipient = replace(
-        RECIPIENT, government_id="00000000000", verification_method="DigitalCertificate"
+        RECIPIENT, government_id="10000098744", verification_method="DigitalCertificate"
     )
     workflow.send("doc1", [recipient])
     creation = next(
@@ -306,7 +308,7 @@ def test_certificate_creates_identity_before_assignment(backend):
         for method, path, body in events
         if method == "POST" and path == "accounts/account1/signers"
     )
-    assert creation["government_id"] == "00000000000"
+    assert creation["government_id"] == "10000098744"
     assert not any(method == "PUT" for method, _, _ in events)
     assignment = json.loads(events[-1][2])
     assert assignment["signers"][0]["verification_method"] == "DigitalCertificate"
@@ -354,7 +356,7 @@ def test_all_signing_and_notification_payloads(backend, method, channel):
         verification_method=method,
         notification_method=channel,
         whatsapp_phone_number="+15555550100" if channel == "Whatsapp" else "",
-        government_id="00000000000" if method in {
+        government_id="10000098744" if method in {
             "DigitalCertificate", "IdDocumentFaceMatchBasic"
         } else "",
     )
@@ -410,14 +412,14 @@ def test_existing_contact_details_are_not_overwritten(backend, field):
         field: "different-existing-value",
     }]
     recipient = replace(RECIPIENT, **{field: (
-        "00000000000" if field == "government_id" else "+15555550100"
+        "10000098744" if field == "government_id" else "+15555550100"
     )})
     with pytest.raises(AssinafyError):
         workflow.send("doc1", [recipient])
     assert not any(m in {"POST", "PUT", "DELETE"} for m, _, _ in events)
 
 
-@pytest.mark.parametrize("existing_id", [None, "000.000.000-00"])
+@pytest.mark.parametrize("existing_id", [None, "100.000.987-44"])
 def test_existing_contact_identity_is_completed_or_reused(backend, existing_id):
     workflow, events, _, doc, _ = backend
     doc["contacts"] = [{
@@ -425,8 +427,45 @@ def test_existing_contact_identity_is_completed_or_reused(backend, existing_id):
         "government_id": existing_id,
     }]
     workflow.send("doc1", [replace(
-        RECIPIENT, verification_method="DigitalCertificate", government_id="00000000000"
+        RECIPIENT, verification_method="DigitalCertificate", government_id="10000098744"
     )])
     updates = [json.loads(b) for m, _, b in events if m == "PUT"]
-    assert updates == ([{"government_id": "00000000000"}] if existing_id is None else [])
+    assert updates == ([{"government_id": "10000098744"}] if existing_id is None else [])
     assert not any(m == "POST" and p.endswith("/signers") for m, p, _ in events)
+
+
+@pytest.mark.parametrize("method,identity", [
+    ("DigitalCertificate", "garbage"), ("DigitalCertificate", "00000000000"),
+    ("DigitalCertificate", "10000098745"), ("DigitalCertificate", "12.ABC.345/01DE-34"),
+    ("IdDocumentFaceMatchBasic", "00000000000"),
+    ("IdDocumentFaceMatchBasic", "12.ABC.345/01DE-35"),
+])
+def test_invalid_identity_fails_before_upload(backend, method, identity):
+    workflow, events, _, _, _ = backend
+    with pytest.raises(ValueError, match="CPF"):
+        workflow.prepare(PDF, "test.pdf", [replace(
+            RECIPIENT, verification_method=method, government_id=identity,
+        )])
+    assert not events
+
+
+@pytest.mark.parametrize("field,value", [
+    ("email", "changed@example.invalid"), ("whatsapp_phone_number", "+15555550101"),
+    ("notification_methods", ["Whatsapp"]),
+])
+def test_resend_refuses_changed_destination(backend, field, value):
+    workflow, events, _, doc, _ = backend
+    workflow.send("doc1", [RECIPIENT])
+    confirmed = dict(doc["assignment"]["signers"][0])
+    doc["assignment"]["signers"][0][field] = value
+    with pytest.raises(ValueError, match="destinatário mudou"):
+        workflow.resend("doc1", "signer1", confirmed=confirmed)
+    assert not any(path.endswith("/resend") for _, path, _ in events)
+
+
+def test_resend_requires_confirmed_destination(backend):
+    workflow, events, _, _, _ = backend
+    workflow.send("doc1", [RECIPIENT])
+    with pytest.raises(ValueError, match="destinatário mudou"):
+        workflow.resend("doc1", "signer1")
+    assert not any(path.endswith("/resend") for _, path, _ in events)

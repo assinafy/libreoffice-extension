@@ -2,10 +2,10 @@
 
 The [live API reference](https://api.assinafy.com.br/v1/docs) and its
 [OpenAPI document](https://api.assinafy.com.br/v1/docs/openapi.json) define the
-wire contract. The extension bundles the published Assinafy Python SDK 2.0.0.
+wire contract. The extension bundles the published Assinafy Python SDK 2.0.1.
 Every SDK resource method includes request and response documentation in its
 docstring; the complete SDK reference is in the
-[official repository](https://github.com/assinafy/python-sdk/tree/v2.0.0).
+[official repository](https://github.com/assinafy/python-sdk/tree/v2.0.1).
 
 ## Runtime and boundaries
 
@@ -14,10 +14,14 @@ for the embedded interpreter. Python has annual stable releases and five years
 of support rather than an LTS edition; see the
 [Python support table](https://devguide.python.org/versions/).
 
-`assinafy_addon.py` registers three native commands. `ui.py` owns UNO, PDF
+`assinafy_addon.py` registers four native commands. `ui.py` owns UNO, PDF
 export, preview, native confirmations and the password container. `workflow.py`
 uses the SDK for account, contact, document and assignment operations. `oauth.py`
 implements the public application's PKCE callback and token rotation.
+`contracts.py` supplies the six CLM operations absent from SDK 2.0.1 through
+the public `get_http_client()` and the SDK's `BaseResource` response/error
+helpers. It uses the same authenticated client, TLS policy and workspace.
+`validation.py` shares CPF/CNPJ checks between signer and contract forms.
 
 Network operations run in a worker. Document access, credential storage and
 dialogs run on the office thread through `App.on_main()`. One office process
@@ -308,6 +312,187 @@ notified only after every signer in the previous step finishes. Biometric
 in the Assinafy application. Biometric evidence and A1/A3 keys remain in the
 hosted signing flow; the extension never collects them.
 
+Identity preflight checks both CPF check digits and numeric/alphanumeric CNPJ
+check digits. The algorithms follow the official
+[CPF calculation](https://cdn.tesouro.gov.br/sistemas-internos/apex/producao/sistemas/thot/arquivos/publicacoes/31907_1027694/Protocolo_arrecadacao_DARF.pdf)
+and [CNPJ technical manual](https://www.gov.br/receitafederal/pt-br/centrais-de-conteudo/publicacoes/documentos-tecnicos/cnpj/manual-dv-cnpj.pdf).
+This validates input syntax, not a person's identity; the hosted flow performs
+the verification. Resend refreshes the contact before confirmation and compares
+the confirmed email, phone and channel with a final document read before POST.
+Delivery history shows both returned error code and explanation.
+
+## Contract lifecycle management
+
+Contracts belong to existing documents. Upload/signature operations stay
+independent: adding terms never uploads another document or creates an
+assignment. OAuth uses the existing `documents:read` and `documents:write`
+scopes. The account-scoped routes enforce workspace ownership. Reads remain
+available when the plan no longer permits writes.
+
+| Adapter method | Request relative to `/v1` | Unwrapped return |
+| --- | --- | --- |
+| `Contracts.list(params)` | `GET /accounts/{accountId}/contracts`; query below | `{"data":[DocumentContract],"meta":{"current_page":1,"per_page":20,"total":1,"last_page":1}}`. |
+| `Contracts.get(document_id)` | `GET /accounts/{accountId}/documents/{documentId}/contract`; no body | DocumentContract with amendments, or DocumentContractAmendment; `None` only for `404` with `code: NoContractTerms`. |
+| `Contracts.update(document_id, payload)` | `PUT /accounts/{accountId}/documents/{documentId}/contract`; partial terms or amendment JSON below | DocumentContract or DocumentContractAmendment. |
+| `Contracts.related(document_id)` | `GET /accounts/{accountId}/documents/{documentId}/contract/related`; no body | Root DocumentContract with amendments, from any document in the family. |
+| `Contracts.renew(document_id, payload)` | `POST /accounts/{accountId}/documents/{documentId}/contract/renew`; renewal JSON below | DocumentContract with advanced end date and term. |
+| `Contracts.terminate(document_id, payload)` | `POST /accounts/{accountId}/documents/{documentId}/contract/terminate`; optional reason/precondition JSON | DocumentContract with `status: terminated`. |
+
+The native list sends `page`, `per-page=20`, `search`, optional `status`,
+`sort=-updated_at`, and `expand=document`. The adapter also accepts the API's
+`counterparty`, `end_date_from`, `end_date_to`, `ending_within_days`,
+`external_system` and `external_id` filters. Status may be a comma-separated
+combination of `draft,active,expired,terminated`; sort permits `end_date` or
+`updated_at`, with a leading minus for descending. Dates are `YYYY-MM-DD`.
+`ending_within_days` is 0–3650, inclusive, by the Brasília calendar day.
+Pagination uses the SDK's `X-Pagination-*` response headers.
+
+A full terms request is shown below; in practice send only changed fields:
+
+```json
+{
+  "status": "active",
+  "counterparty_name": "Example Company",
+  "counterparty_taxpayer_id": "12.ABC.345/01DE-35",
+  "value": 120000.50,
+  "currency": "BRL",
+  "start_date": "2030-01-01",
+  "end_date": "2030-12-31",
+  "auto_renew": true,
+  "renewal_term_months": 12,
+  "notice_period_days": 30,
+  "owner_id": "workspace-member-id",
+  "metadata": {"department": "Example"},
+  "external_references": [{"system": "example-crm", "id": "contract-1"}],
+  "updated_at": "2026-10-23T12:00:00Z"
+}
+```
+
+Omit `updated_at` on the first creation or first link. For existing objects,
+native writes always include the timestamp that was read; a concurrent change
+returns `409/ContractChanged` without writing anything. Refresh and reconfirm,
+never replace the precondition automatically. The API also permits a null
+precondition for callers intentionally choosing last-write-wins; the native
+flow does not use that option.
+
+Terms response (inside the normal `status/message/data` envelope):
+
+```json
+{
+  "resource": "document_contract",
+  "document_id": "contract-document-id",
+  "status": "active",
+  "counterparty_name": "Example Company",
+  "counterparty_taxpayer_id": "12ABC34501DE35",
+  "value": 120000.50,
+  "currency": "BRL",
+  "start_date": "2030-01-01",
+  "end_date": "2030-12-31",
+  "auto_renew": true,
+  "renewal_term_months": 12,
+  "notice_period_days": 30,
+  "term": 1,
+  "owner_id": "workspace-member-id",
+  "metadata": {"department": "Example"},
+  "external_references": [{"system": "example-crm", "id": "contract-1"}],
+  "amendments": [],
+  "created_at": "2026-10-23T12:00:00Z",
+  "updated_at": "2026-10-23T12:00:00Z"
+}
+```
+
+`document` is added with `expand=document`, using the Document schema above;
+documents also expose `has_contract`. `amendments` appears on single-contract
+and related-family reads. Preserve unknown response fields for API evolution.
+
+All terms are optional on write, but PUT needs at least one attribute. Null
+clears a field; `auto_renew: null` resets false and null currency becomes BRL
+while value is set. Status cannot be null. `external_references` replaces the
+whole list; null or `[]` clears it. The native form leaves owner, metadata and
+external references untouched. Values are nonnegative, at most two decimals,
+up to 9999999999999.99; dates start at year 1000 and end cannot precede start.
+Renewal months are 1–600; notice days 0–3650. Currency has three letters.
+The server validates membership, plan, metadata/reference limits, valid
+identities and state transitions, returning all applicable field problems.
+
+New terms may use any status; expired requires a past end date and terminated
+requires an end date. Existing draft terms may become active; active cannot
+return to draft. The lifecycle expires contracts, terminate closes them, and
+renew can reopen expired contracts. A terminated contract cannot be renewed.
+Cancelled, declined or expired documents cannot acquire new terms or a first
+link; their existing terms remain editable.
+
+To link an instrument, update the instrument's document, not the parent:
+
+```json
+{
+  "parent_document_id": "contract-document-id",
+  "relation_type": "amendment",
+  "value": 130000,
+  "auto_renew": false
+}
+```
+
+An amendment response includes its own timestamp and delta:
+
+```json
+{
+  "resource": "document_contract_amendment",
+  "document_id": "instrument-document-id",
+  "document_name": "Example amendment.pdf",
+  "parent_document_id": "contract-document-id",
+  "relation_type": "amendment",
+  "number": null,
+  "status": "pending",
+  "document_status": "pending_signature",
+  "apply_error": null,
+  "currency": "BRL",
+  "terms": {"value": 130000, "auto_renew": false},
+  "changes": {
+    "value": {"from": 120000.50, "to": 130000},
+    "auto_renew": {"from": true, "to": false}
+  },
+  "applied_at": null,
+  "created_at": "2026-10-23T12:00:00Z",
+  "updated_at": "2026-10-23T12:00:00Z"
+}
+```
+
+`amendment` changes value, currency, start/end dates, renewal and notice terms,
+counterparty or metadata. `renewal` changes only end date and value;
+`termination` changes only end date. A pending delta is merged on PUT; null
+removes that key instead of clearing the parent's value. For example
+`{"auto_renew":null,"updated_at":"2026-10-23T12:00:00Z"}` removes that override.
+The native amendment checkbox distinguishes missing, false and true.
+`{"parent_document_id":null,"updated_at":"2026-10-23T12:00:00Z"}` unlinks a
+pending instrument. Applied instruments are immutable.
+
+Changes apply after certification, in signing order, immediately if eligible
+and already signed. The response reports pending/applied state, application
+errors and currency independently from the delta. An earlier blocked
+instrument holds later ones; a late instrument older than one already applied
+stays blocked. The Assinafy hourly process retries eligible changes.
+
+Native renewal sends `{"term":1,"updated_at":"2026-10-23T12:00:00Z"}`. It
+advances end date by the configured months, or 12, until it is in the future;
+the returned contract has incremented `term`. The API also accepts an explicit
+target such as `{"end_date":"2031-12-31","value":125000}`. Omitted value is
+preserved; null clears it. Current term or target date prevents duplicate
+renewal after an uncertain response. Native termination sends
+`{"reason":"Agreement ended","updated_at":"2026-10-23T12:00:00Z"}`; reason
+is optional and limited to 500 characters. The returned terms have
+`status: terminated`, retaining the document and signatures.
+
+The native editor sends only changed fields, asks for confirmation, and does
+not retry network errors. Reads distinguish `NoContractTerms` from an absent
+or unauthorized document. `400` errors show every returned `field` and message
+(or stable code), `403` explains the permission/plan restriction, and `409`
+requires a fresh read. The hourly lifecycle uses Brasília dates for notices,
+45/30-day warnings, renewal and expiration, with owner notifications and
+`document_contract_*` activities/webhooks. When the plan lapses, lifecycle and
+amendments wait; processing catches up when the plan returns. The extension
+polls on demand and registers no webhook or background scheduler.
+
 ## Confirmation and recovery
 
 1. Export and review the exact PDF bytes locally.
@@ -371,6 +556,9 @@ breaker after ten failed events. Use dispatch history to diagnose failures.
 ## Development and packaging
 
 Build from a clean Python 3.11 virtual environment with PyPI dependencies:
+Node.js is also required for the browser callback test; Docker runs the
+LibreOffice native checks. CI tests Python 3.11 and 3.15, keeping the package
+build on 3.11.
 
 ```sh
 python3.11 -m venv .venv
@@ -394,6 +582,8 @@ overridden so its source does not replace the installed package. Check the
 extension on Python 3.11 and the latest stable Python as well as the real
 LibreOffice smoke test. The smoke test covers registration, dispatch, four PDF
 exports, native dialogs, signing choices, confirmations and password storage.
+It also covers contract search, partial edits, all three instrument types,
+amendment renewal overrides, and lifecycle confirmations.
 
 Use runtime environment variables for sandbox credentials and authorized test
 contacts. Keep profiles, documents, logs and credentials out of packages and

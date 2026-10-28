@@ -17,6 +17,7 @@ from com.sun.star.document.MacroExecMode import NEVER_EXECUTE
 from com.sun.star.document.UpdateDocMode import NO_UPDATE
 
 from .config import load_config, write_private
+from .contracts import RELATIONS, TERM_FIELDS, parse_term
 from .oauth import OAuth, decode_tokens
 from .workflow import (
     Recipient,
@@ -150,7 +151,7 @@ class Dialog:
                 model = control.getModel()
                 self.values[name] = {
                     key: model.getPropertyValue(key)
-                    for key in ("Text", "StringItemList", "SelectedItems")
+                    for key in ("Text", "StringItemList", "SelectedItems", "State")
                     if model.getPropertySetInfo().hasPropertyByName(key)
                 }
             return result
@@ -626,10 +627,18 @@ class App:
         self.box("Convites enviados.\nDocumento: " + document_id)
         return {"status": "sent", "document_id": document_id, "assignment_id": assignment["id"]}
 
-    def history(self):
+    def history(self, *, contracts=False):
         workflow = self.get_workflow()
-        d = Dialog(self, "Assinafy — documentos", 510, 345)
-        search = d.edit("search", "Buscar documentos", "", 14, 12, 370)
+        d = Dialog(self, "Assinafy — contratos" if contracts else "Assinafy — documentos", 510, 345)
+        search = d.edit("search", "Buscar documentos", "", 14, 12, 270 if contracts else 370)
+        statuses = ("", "draft", "active", "expired", "terminated")
+        if contracts:
+            d.label("filter_label", "Situação do contrato", 294, 12, 100)
+            status_filter = d.add(
+                "ListBox", "filter", 294, 27, 90, 20, Dropdown=True,
+                StringItemList=("Todos", "Rascunho", "Ativo", "Expirado", "Encerrado"),
+                SelectedItems=(0,),
+            )
         d.label("documents_label", "Documentos do workspace conectado", 14, 59, 480)
         listing = d.add("ListBox", "documents", 14, 78, 482, 175, Dropdown=False)
         rows, page = [], [1]
@@ -638,19 +647,31 @@ class App:
             page[0] = 1 if reset else max(1, page[0] + delta)
             query = search.Text
             current_page = page[0]
+            status = (
+                statuses[(status_filter.getModel().SelectedItems or (0,))[0]] if contracts else ""
+            )
             result = self.busy(
-                "Consultando documentos", lambda: workflow.list_documents(current_page, query)
+                "Consultando contratos" if contracts else "Consultando documentos",
+                lambda: workflow.list_contracts(current_page, query, status) if contracts
+                else workflow.list_documents(current_page, query),
             )
             rows[:] = result["data"]
             listing.getModel().StringItemList = tuple(
-                f"{r.get('name', '')} · {r.get('status', '')} · {r['id']}" for r in rows
+                (
+                    f"{(r.get('document') or {}).get('name', r['document_id'])} · "
+                    f"{r.get('status', '')} · {r.get('end_date') or 'sem término'}"
+                    if contracts else f"{r.get('name', '')} · {r.get('status', '')} · {r['id']}"
+                ) for r in rows
             )
 
         def details():
             selected = listing.getSelectedItemPos()
             if selected < 0:
                 raise ValueError("Selecione um documento.")
-            self.document_details(rows[selected]["id"])
+            if contracts:
+                self.contract_details(rows[selected]["document_id"])
+            else:
+                self.document_details(rows[selected]["id"])
             refresh()
 
         d.button("search_button", "Buscar", 394, 27, 102, fn=lambda: refresh(reset=True))
@@ -660,7 +681,8 @@ class App:
         d.button("close", "Fechar", 404, 271, kind=2)
         d.label(
             "hint",
-            "Atualize o status antes de repetir um envio que falhou ou expirou.",
+            "Para cadastrar termos, abra um documento em Envios recentes > Acompanhar > Contrato."
+            if contracts else "Atualize o status antes de repetir um envio que falhou ou expirou.",
             14,
             310,
             482,
@@ -707,6 +729,14 @@ class App:
             if selected < 0:
                 raise ValueError("Selecione um signatário.")
             signer = signers[selected]
+            signer_id = signer["id"]
+            current = self.busy("Atualizando destinatário", lambda: workflow.document(document_id))
+            signer = next(
+                (s for s in (current.get("assignment") or {}).get("signers", [])
+                 if s.get("id") == signer_id), None,
+            )
+            if signer is None:
+                raise ValueError("O signatário não pertence mais a este envio.")
             estimate = self.busy(
                 "Consultando custo",
                 lambda: workflow.resend(document_id, signer["id"], estimate_only=True),
@@ -720,7 +750,10 @@ class App:
                 "Créditos estimados: " + str(estimate.get("total_credits", "—")),
                 query=True,
             ):
-                self.busy("Reenviando convite", lambda: workflow.resend(document_id, signer["id"]))
+                self.busy(
+                    "Reenviando convite",
+                    lambda: workflow.resend(document_id, signer_id, confirmed=signer),
+                )
                 refresh()
 
         def notifications():
@@ -735,7 +768,7 @@ class App:
                 + "\n\n" + ("\n".join(
                     f"{entry.get('event', '')}: {entry.get('status', '')} · "
                     f"{entry.get('sent_at') or entry.get('failed_at') or '—'} · "
-                    f"{entry.get('error_code') or ''}"
+                    f"{entry.get('error_code') or ''} · {entry.get('error_message') or ''}"
                     for entry in history
                 ) or "Nenhuma notificação registrada. Etapas futuras aguardam a anterior.")
             )
@@ -768,7 +801,9 @@ class App:
                 "Excluir este documento da Assinafy?\n\n"
                 + doc.get("name", document_id)
                 + "\n\nEsta ação exclui o documento; não preserva uma cópia assinada. "
-                "Baixe os artefatos necessários primeiro.",
+                "Baixe os artefatos necessários primeiro."
+                "\nSe o documento estiver em revisão de identidade, a exclusão cancela "
+                "a revisão e notifica todos os signatários.",
                 query=True,
             ):
                 self.busy("Excluindo documento", lambda: workflow.delete(document_id))
@@ -790,7 +825,9 @@ class App:
             20,
             Dropdown=True,
             StringItemList=tuple(label for _, label in artifacts),
-            SelectedItems=(0,),
+            SelectedItems=(3 if any(
+                s.get("verification_method") == "DigitalCertificate" for s in signers
+            ) else 0,),
         )
         d.button("download", "Baixar…", 344, 205, 130, fn=download)
         d.button("refresh", "Atualizar", 14, 237, fn=refresh)
@@ -798,6 +835,8 @@ class App:
         d.button("resend", "Reenviar convite…", 244, 237, 130, fn=resend)
         d.button("delete", "Excluir…", 14, 269, fn=delete)
         d.button("notifications", "Notificações…", 114, 269, 120, fn=notifications)
+        d.button("contract", "Contrato…", 244, 269, 130,
+                 fn=lambda: self.contract_details(document_id))
         d.button("close", "Fechar", 384, 269, kind=2)
         d.label(
             "hint",
@@ -811,6 +850,212 @@ class App:
         refresh()
         d.execute()
 
+    def contract_details(self, document_id):
+        workflow = self.get_workflow()
+        doc = self.busy("Consultando documento", lambda: workflow.document(document_id))
+        current = None
+        d = Dialog(self, "Assinafy — gestão do contrato", 520, 340)
+        d.label("document", doc.get("name", document_id) + " · " + document_id, 14, 12, 492, 25)
+        details = d.add(
+            "Edit", "terms", 14, 42, 492, 190, MultiLine=True, ReadOnly=True, VScroll=True,
+            HelpText="Termos do contrato",
+        )
+
+        def refresh():
+            nonlocal current
+            current = self.busy("Consultando contrato", lambda: workflow.contract(document_id))
+            amendment = (current or {}).get("resource") == "document_contract_amendment"
+            terms = (current.get("terms") or {}) if amendment else (current or {})
+            lines = ["Situação: " + str((current or {}).get("status", "sem termos cadastrados"))]
+            if amendment:
+                lines += [
+                    "Relação: " + current.get("relation_type", ""),
+                    "Contrato principal: " + current.get("parent_document_id", ""),
+                    "Documento: " + current.get("document_status", ""),
+                    "Aplicação: " + (current.get("apply_error") or "sem impedimento informado"),
+                    "Moeda dos valores: " + (current.get("currency") or "—"),
+                    "Renovação automática: " + (
+                        "sem alteração" if "auto_renew" not in terms
+                        else "sim" if terms["auto_renew"] else "não"
+                    ),
+                ]
+            lines += [f"{label}: {terms.get(key) if terms.get(key) is not None else '—'}"
+                      for key, label, _ in TERM_FIELDS]
+            if not amendment:
+                lines += [
+                    "Renovação automática: " + ("sim" if terms.get("auto_renew") else "não"),
+                    "Período: " + str(terms.get("term", "—")),
+                ]
+            details.Text = "\n".join(lines)
+            d.controls["edit_terms"].setEnable(
+                not (amendment and current.get("status") == "applied")
+            )
+            d.controls["link"].setEnable(current is None)
+            d.controls["unlink"].setEnable(amendment and current.get("status") == "pending")
+            d.controls["family"].setEnable(current is not None)
+            d.controls["renew"].setEnable(
+                bool(current) and not amendment and current.get("status") != "terminated"
+            )
+            d.controls["terminate"].setEnable(
+                bool(current) and not amendment and current.get("status") != "terminated"
+            )
+
+        def edit():
+            self.contract_editor(document_id, current)
+            refresh()
+
+        def link():
+            form = Dialog(self, "Vincular instrumento ao contrato", 430, 155)
+            form.edit("parent", "ID do documento do contrato principal", "", 14, 12, 402)
+            form.label("relation_label", "Tipo de instrumento", 14, 57, 240)
+            form.add("ListBox", "relation", 14, 74, 240, 20, Dropdown=True,
+                     StringItemList=tuple(label for _, label in RELATIONS), SelectedItems=(0,))
+            form.button("continue", "Continuar…", 226, 116, kind=1)
+            form.button("cancel", "Cancelar", 326, 116, kind=2)
+            if form.execute() == 1:
+                parent = form.values["parent"]["Text"].strip()
+                if not parent or parent == document_id:
+                    raise ValueError("Informe outro documento como contrato principal.")
+                relation = RELATIONS[form.values["relation"]["SelectedItems"][0]][0]
+                self.contract_editor(document_id, None, link={
+                    "parent_document_id": parent, "relation_type": relation,
+                })
+                refresh()
+
+        def unlink():
+            if self.box("Desvincular este instrumento pendente do contrato principal?", query=True):
+                payload = {"parent_document_id": None, "updated_at": current["updated_at"]}
+                self.busy("Desvinculando instrumento",
+                          lambda: workflow.update_contract(document_id, payload))
+                refresh()
+
+        def family():
+            root = self.busy(
+                "Consultando instrumentos", lambda: workflow.related_contract(document_id)
+            )
+            self.box("Contrato principal: " + root["document_id"] + "\n\n" + (
+                "\n\n".join(
+                    f"{a.get('document_name', a['document_id'])} · {a['document_id']}\n"
+                    f"{a.get('relation_type', '')} · {a.get('status', '')} · "
+                    f"{a.get('document_status', '')}\n{a.get('apply_error') or ''}"
+                    for a in root.get("amendments", [])
+                ) or "Nenhum instrumento vinculado."
+            ))
+
+        def renew():
+            payload = {"term": current["term"], "updated_at": current["updated_at"]}
+            if self.box(
+                f"Renovar o período {current['term']} por "
+                f"{current.get('renewal_term_months') or 12} meses?\n"
+                f"Término atual: {current.get('end_date') or 'não definido'}\n"
+                "O prazo avança até ficar no futuro. O valor permanece igual.", query=True,
+            ):
+                self.busy(
+                    "Renovando contrato", lambda: workflow.renew_contract(document_id, payload)
+                )
+                refresh()
+
+        def terminate():
+            form = Dialog(self, "Encerrar contrato", 430, 170)
+            form.edit("reason", "Motivo (opcional, até 500 caracteres)", "", 14, 12, 402,
+                      60, MultiLine=True, MaxTextLen=500)
+            form.label("hint", "Encerra o acompanhamento; o documento e as assinaturas permanecem.",
+                       14, 96, 402, 28)
+            form.button("continue", "Continuar…", 226, 136, kind=1)
+            form.button("cancel", "Cancelar", 326, 136, kind=2)
+            if form.execute() == 1:
+                payload = {"reason": form.values["reason"]["Text"].strip(),
+                           "updated_at": current["updated_at"]}
+                if self.box("Encerrar este contrato?\n\nMotivo: " + payload["reason"], query=True):
+                    self.busy("Encerrando contrato",
+                              lambda: workflow.terminate_contract(document_id, payload))
+                    refresh()
+
+        d.button("edit_terms", "Editar termos…", 14, 246, 110, fn=edit)
+        d.button("link", "Vincular…", 134, 246, fn=link)
+        d.button("family", "Instrumentos…", 234, 246, 110, fn=family)
+        d.button("unlink", "Desvincular…", 354, 246, 110, fn=unlink)
+        d.button("renew", "Renovar…", 14, 278, 110, fn=renew)
+        d.button("terminate", "Encerrar…", 134, 278, fn=terminate)
+        d.button("refresh", "Atualizar", 234, 278, 110, fn=refresh)
+        d.button("close", "Fechar", 416, 310, kind=2)
+        d.label("hint", "Alterações exigem um plano com gestão de contratos.", 14, 313, 390)
+        refresh()
+        d.execute()
+
+    def contract_editor(self, document_id, current, *, link=None):
+        workflow = self.get_workflow()
+        amendment = bool(link) or (current or {}).get("resource") == "document_contract_amendment"
+        original = ((current or {}).get("terms") or {}) if amendment else (current or {})
+        relation = (link or current or {}).get("relation_type")
+        fields = TERM_FIELDS
+        if amendment and relation in {"renewal", "termination"}:
+            allowed = {"end_date", "value"} if relation == "renewal" else {"end_date"}
+            fields = tuple(field for field in fields if field[0] in allowed)
+        d = Dialog(self, "Assinafy — termos do instrumento" if amendment else "Assinafy — termos",
+                   500, 335)
+        for index, (key, label, _) in enumerate(fields):
+            d.edit(key, label, str(original[key]) if original.get(key) is not None else "",
+                   14 + index % 2 * 245, 12 + index // 2 * 45, 226)
+        show_auto = not amendment or relation == "amendment"
+        if show_auto:
+            d.add("CheckBox", "auto_renew", 14, 198, 300, 18,
+                  Label="Renovar automaticamente" + (
+                      " (indefinido: sem alteração)" if amendment else ""
+                  ),
+                  TriState=amendment,
+                  State=2 if amendment and "auto_renew" not in original
+                  else int(bool(original.get("auto_renew"))))
+        statuses = ("draft", "active", "expired", "terminated") if current is None else (
+            "draft", "active",
+        )
+        show_status = not amendment and (current is None or original.get("status") == "draft")
+        if show_status:
+            d.label("status_label", "Situação", 14, 224, 160)
+            d.add("ListBox", "status", 14, 239, 226, 20, Dropdown=True,
+                  StringItemList=tuple({"draft": "Rascunho", "active": "Ativo",
+                                        "expired": "Expirado", "terminated": "Encerrado"}[s]
+                                       for s in statuses),
+                  SelectedItems=(statuses.index(original.get("status", "draft")),))
+        d.label("hint", "Deixar um campo vazio remove seu valor. No instrumento pendente, "
+                "remove apenas essa alteração; os termos do contrato principal permanecem.",
+                14, 266, 472, 28)
+        d.button("save", "Revisar…", 296, 306, kind=1)
+        d.button("cancel", "Cancelar", 396, 306, kind=2)
+        if d.execute() != 1:
+            return
+        payload = dict(link or {})
+        for key, _, kind in fields:
+            value = parse_term(d.values[key]["Text"], kind)
+            if value != original.get(key):
+                payload[key] = value
+        if show_auto:
+            state = d.values["auto_renew"]["State"]
+            value = None if state == 2 else bool(state)
+            previous = original.get("auto_renew") if amendment else bool(original.get("auto_renew"))
+            if value != previous:
+                payload["auto_renew"] = value
+        if show_status:
+            status = statuses[d.values["status"]["SelectedItems"][0]]
+            if status != original.get("status"):
+                payload["status"] = status
+        if not payload:
+            return
+        merged = {**original, **payload}
+        if merged.get("start_date") and merged.get("end_date"):
+            if merged["end_date"] < merged["start_date"]:
+                raise ValueError("O término não pode ser anterior ao início.")
+        labels = {key: label for key, label, _ in TERM_FIELDS} | {
+            "auto_renew": "Renovação automática", "status": "Situação",
+            "parent_document_id": "Contrato principal", "relation_type": "Instrumento",
+        }
+        summary = "\n".join(f"{labels[key]}: {value if value is not None else 'remover'}"
+                            for key, value in payload.items())
+        if current:
+            payload["updated_at"] = current["updated_at"]
+        if self.box("Salvar estas alterações?\n\n" + summary, query=True):
+            self.busy("Salvando termos", lambda: workflow.update_contract(document_id, payload))
+
     def run(self, frame, command):
         if self.in_dialog:
             return
@@ -820,6 +1065,7 @@ class App:
             handlers = {
                 "Send": self.compose,
                 "History": self.history,
+                "Contracts": lambda: self.history(contracts=True),
                 "Settings": self.settings,
             }
             if command not in handlers:

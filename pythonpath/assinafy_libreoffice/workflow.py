@@ -11,7 +11,9 @@ from datetime import UTC, datetime, timedelta
 from assinafy import ApiError, AssinafyClient, AssinafyError, ValidationError
 from assinafy.utils import validate_datetime, validate_email, validate_signer_methods
 
+from .contracts import Contracts
 from .oauth import UNSENT, ConnectionError
+from .validation import validate_taxpayer_id
 
 
 @dataclass(frozen=True)
@@ -54,12 +56,9 @@ class Recipient:
         if not isinstance(self.government_id, str) or len(self.government_id) > 32:
             raise ValueError("CPF/CNPJ inválido.")
         if self.verification_method in {"DigitalCertificate", "IdDocumentFaceMatchBasic"}:
-            if not self.government_id.strip():
-                raise ValueError("Assinatura com certificado ou biometria exige CPF/CNPJ.")
-            if self.verification_method == "IdDocumentFaceMatchBasic" and not re.fullmatch(
-                r"[0-9]{11}", re.sub(r"[.\-\s]", "", self.government_id)
-            ):
-                raise ValueError("A biometria exige um CPF de 11 dígitos.")
+            validate_taxpayer_id(
+                self.government_id, cpf_only=self.verification_method == "IdDocumentFaceMatchBasic"
+            )
 
     def pricing(self):
         channel = self.notification_method or (
@@ -121,11 +120,19 @@ def error_message(error):
             "Verifique a rede e tente novamente."
         )
     if isinstance(error, ApiError):
+        if error.status_code == 400 and isinstance(error.response_data, dict):
+            problems = error.response_data.get("errors")
+            if isinstance(problems, list) and problems:
+                return "Confira os dados:\n" + "\n".join(
+                    f"{item.get('field', '')}: {item.get('message') or item.get('code', '')}"
+                    for item in problems if isinstance(item, dict)
+                )
         return {
             400: "Dados recusados. Confira destinatários, documento e permissões do plano.",
             401: "Sua autorização expirou. Reconecte a conta.",
-            403: "Operação não autorizada. Confira o workspace e as permissões.",
+            403: "Operação não autorizada. Confira o workspace, as permissões e o plano.",
             404: "O documento ou recurso não está disponível.",
+            409: "O contrato mudou desde a leitura. Atualize e confira os dados antes de salvar.",
             429: "Limite de requisições atingido. Aguarde e tente novamente.",
         }.get(
             error.status_code, "A Assinafy está indisponível. Consulte o status antes de reenviar."
@@ -326,12 +333,20 @@ class Workflow:
             validate_pdf(data, upload=False)
         return data
 
-    def resend(self, document_id, signer_id, *, estimate_only=False):
+    def resend(self, document_id, signer_id, *, estimate_only=False, confirmed=None):
         doc = self.document(document_id)
         assignment = doc.get("assignment") or {}
         assignment_id = require_id(assignment)
-        if not any(s.get("id") == signer_id for s in assignment.get("signers", [])):
+        signer = next((s for s in assignment.get("signers", []) if s.get("id") == signer_id), None)
+        if signer is None:
             raise ValueError("O signatário não pertence a este envio.")
+        if not estimate_only and (
+            confirmed is None or any(
+                signer.get(key) != confirmed.get(key)
+                for key in ("email", "whatsapp_phone_number", "notification_methods")
+            )
+        ):
+            raise ValueError("O destinatário mudou. Atualize e confirme o convite novamente.")
         return self.call(
             lambda c: (
                 c.assignments.estimate_resend_cost(document_id, assignment_id, signer_id)
@@ -340,6 +355,34 @@ class Workflow:
             ),
             write=True,
         )
+
+    def _contracts(self, action, *, write=False):
+        return self.call(
+            lambda c: action(Contracts(c.get_http_client(), self.account["id"])), write=write
+        )
+
+    def list_contracts(self, page=1, search="", status=""):
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise ValueError("Página inválida.")
+        return self._contracts(lambda c: c.list({
+            "page": page, "per_page": 20, "search": search, "status": status or None,
+            "sort": "-updated_at", "expand": "document",
+        }))
+
+    def contract(self, document_id):
+        return self._contracts(lambda c: c.get(document_id))
+
+    def related_contract(self, document_id):
+        return self._contracts(lambda c: c.related(document_id))
+
+    def update_contract(self, document_id, payload):
+        return self._contracts(lambda c: c.update(document_id, payload), write=True)
+
+    def renew_contract(self, document_id, payload):
+        return self._contracts(lambda c: c.renew(document_id, payload), write=True)
+
+    def terminate_contract(self, document_id, payload):
+        return self._contracts(lambda c: c.terminate(document_id, payload), write=True)
 
     def delete(self, document_id):
         doc = self.document(document_id)

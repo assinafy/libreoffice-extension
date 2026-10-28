@@ -1,6 +1,6 @@
 # Assinafy para LibreOffice
 
-Extensão nativa para preparar e acompanhar assinaturas de documentos do Writer,
+Extensão nativa para preparar assinaturas e acompanhar contratos do Writer,
 Calc, Impress e Draw. O documento aberto é exportado para PDF, revisado localmente
 e enviado à Assinafy após confirmação.
 
@@ -10,7 +10,7 @@ e enviado à Assinafy após confirmação.
    26.8 ou posterior, com Python/UNO 3.11+. Em distribuições Linux que separam
    esses componentes, instale também o provedor de scripts Python do LibreOffice.
 2. Abra **Ferramentas → Gerenciador de extensões → Adicionar** e selecione
-   o arquivo `assinafy-1.2.0.oxt` baixado da distribuição Assinafy.
+   o arquivo `assinafy-1.3.0.oxt` baixado da distribuição Assinafy.
 3. Reinicie o LibreOffice. O menu **Assinafy** aparece nos quatro editores.
 4. Abra **Assinafy → Conectar conta** e clique em **Conectar**.
 
@@ -45,7 +45,7 @@ exatamente um workspace. A extensão não recebe a senha da conta.
 
 As permissões solicitadas são `documents:read`, `documents:write` e
 `offline_access`. A falta de permissão de escrita impede upload, envio, reenvio
-e exclusão.
+e exclusão, além de alterações nos contratos.
 
 Para manter a conexão entre sessões, configure uma senha mestra no gerenciador
 de senhas do LibreOffice, nas opções de segurança. No macOS, as opções ficam em
@@ -84,6 +84,8 @@ horário, por exemplo `2030-12-31T23:59:00Z`, pelo menos uma hora no futuro.
 Contatos existentes são reutilizados quando o nome e o e-mail correspondem.
 CPF/CNPJ e WhatsApp ausentes são preenchidos; divergências nos dados existentes
 devem ser corrigidas na Assinafy antes do envio.
+CPF e CNPJ são verificados antes do upload, incluindo os dígitos verificadores;
+CNPJ numérico e alfanumérico são aceitos para certificados.
 
 ### 3. Revisar o PDF
 
@@ -116,7 +118,8 @@ Em **Assinafy → Envios recentes**, pesquise, navegue pelas páginas e selecion
 **Acompanhar**. **Atualizar** consulta o status do documento e de cada signatário.
 **Reenviar convite** consulta o custo e pede confirmação para o destinatário
 selecionado, mostrando o canal e o telefone. **Notificações** mostra o histórico
-de envio e falha retornado pela API para o signatário selecionado. Os convites de
+de envio e falha, com a explicação retornada pela API para o signatário selecionado.
+Se o destinatário mudar durante a confirmação, atualize e confirme novamente. Os convites de
 etapas futuras aguardam a conclusão da etapa anterior.
 
 Na biometria, `InReview` indica que o workspace precisa revisar a identidade no
@@ -145,11 +148,50 @@ Escolha o artefato em **Acompanhar → Baixar**:
 
 A disponibilidade depende do processamento e do tipo de assinatura. Escolha um
 novo nome de arquivo: a extensão preserva arquivos locais já existentes.
+Documentos com signatários ICP-Brasil selecionam **PDF PAdES** inicialmente.
 
 **Excluir** remove o documento remoto somente quando o status retornado pela API
 permite a operação. A ação exige confirmação. Baixe os arquivos necessários
 antes de excluir. A extensão não apresenta a exclusão como cancelamento que
 preserva assinaturas.
+Em revisão de identidade, a exclusão cancela o documento e notifica os signatários;
+a confirmação informa essa consequência.
+
+## Gestão de contratos
+
+1. Abra **Envios recentes → Acompanhar → Contrato** em um documento já enviado.
+   Clique em **Editar termos** para cadastrar contraparte, CPF/CNPJ, valor,
+   moeda, início, término, prazo de renovação e aviso prévio. Use datas
+   `AAAA-MM-DD` e ponto decimal no valor. Revise e confirme as alterações.
+2. Acompanhe os contratos em **Assinafy → Gestão de contratos**. Pesquise pelo
+   nome do documento, filtre a situação e navegue pelas páginas. **Atualizar**
+   consulta os termos atuais. A leitura continua disponível sem o recurso no
+   plano; cadastrar ou alterar termos exige um plano com gestão de contratos.
+3. Para um aditivo, documento de renovação ou rescisão, abra **Contrato** no
+   próprio instrumento, ainda sem termos. Clique em **Vincular**, informe o ID
+   do documento principal e selecione o tipo. Preencha apenas os termos que
+   mudam e confirme. A alteração vale quando o instrumento for assinado, ou
+   imediatamente se já estiver assinado. **Instrumentos** mostra a família,
+   a situação e eventuais impedimentos. Um instrumento aplicado não é editável;
+   um pendente pode ser editado ou desvinculado após confirmação.
+4. **Renovar** confirma o período atual e avança o término pelo prazo de
+   renovação, ou 12 meses quando não definido, até uma data futura. Mantém o
+   valor. **Encerrar** pede um motivo opcional e confirmação; o documento e
+   suas assinaturas permanecem disponíveis. Um contrato encerrado não pode
+   ser renovado; um expirado pode.
+
+Deixar um campo existente vazio remove seu valor. Em um instrumento pendente,
+isso remove a alteração daquele campo, preservando o valor do contrato
+principal. A opção de renovação automática nos aditivos tem três estados:
+ativada, desativada e indefinida (sem alteração). Campos administrados no painel,
+como responsável, metadados e referências externas, são preservados.
+
+A API verifica as regras, o plano e alterações concorrentes. Se alguém mudar
+o contrato durante a edição, **Atualizar** e uma nova confirmação são necessários.
+Após timeout, consulte os termos antes de repetir: a operação pode ter sido
+concluída. O acompanhamento não envia convites de assinatura. Os avisos de
+renovação e vencimento seguem o processamento horário da Assinafy, o calendário
+de Brasília e as preferências de notificação do responsável.
 
 ## Conexão de produção
 

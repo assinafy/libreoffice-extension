@@ -1,7 +1,9 @@
 import json
 import ssl
 import threading
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
@@ -527,3 +529,92 @@ def test_redirects_never_receive_credentials():
         oauth._exchange({"grant_type": "authorization_code"})
     assert len(calls) == 1
     oauth.close()
+
+
+def test_valid_callback_survives_browser_closing_response(monkeypatch):
+    persisted, authorization = [], {}
+
+    class Server:
+        server_port = 54321
+
+        def __init__(self, address, handler):
+            self.handler = handler
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def handle_request(self):
+            def broken_write(_):
+                raise BrokenPipeError("Browser closed")
+
+            headers = Message()
+            headers["Host"] = "127.0.0.1:54321"
+            request = SimpleNamespace(
+                path="/callback?" + urlencode({"state": authorization["state"][0],
+                                               "iss": CONFIG.issuer, "code": "one-time-code"}),
+                headers=headers, send_response=lambda *_: None,
+                send_header=lambda *_: None, end_headers=lambda: None,
+                wfile=SimpleNamespace(write=broken_write),
+            )
+            with pytest.raises(BrokenPipeError):
+                self.handler.do_GET(request)
+
+    monkeypatch.setattr("assinafy_libreoffice.oauth.HTTPServer", Server)
+    oauth = OAuth(CONFIG, persisted.append, transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json=metadata() if request.method == "GET"
+                                       else token_response())
+    ))
+    try:
+        oauth.connect(lambda url: authorization.update(parse_qs(urlsplit(url).query)), timeout=1)
+        assert persisted[-1]["access_token"] == "test-access"
+    finally:
+        oauth.close()
+
+
+@pytest.mark.parametrize("status", [400, 401, 429, 500])
+def test_every_refresh_response_retires_sent_token(status):
+    posts, saved = [], []
+
+    def upstream(request):
+        posts.append(request)
+        return httpx.Response(status, json={"error": "invalid_grant"})
+
+    oauth = OAuth(CONFIG, saved.append, {"refresh_token": "test-old"},
+                  transport=httpx.MockTransport(upstream))
+    oauth.metadata = metadata()
+    try:
+        for _ in range(2):
+            with pytest.raises(ConnectionError):
+                oauth.access_token()
+        assert len(posts) == 1 and saved == [{}] and not oauth.tokens
+    finally:
+        oauth.close()
+
+
+def test_replacement_storage_failure_never_returns_or_replays_tokens():
+    posts, stored = [], {}
+
+    def save(tokens):
+        if tokens:
+            raise OSError("Storage unavailable")
+        stored.clear()
+
+    def upstream(request):
+        posts.append(request)
+        return httpx.Response(200, json=token_response())
+
+    oauth = OAuth(CONFIG, save, {"refresh_token": "test-old"}, load=lambda: stored,
+                  transport=httpx.MockTransport(upstream))
+    oauth.metadata = metadata()
+    # The vault starts with the old token and is cleared before the request leaves.
+    stored.update(oauth.tokens)
+    try:
+        for _ in range(2):
+            with pytest.raises(ConnectionError):
+                oauth.access_token()
+        assert len(posts) == 1 and not stored and not oauth.tokens
+    finally:
+        oauth.close()

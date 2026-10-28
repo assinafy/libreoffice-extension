@@ -27,7 +27,10 @@ def test_registration_and_build_archive(tmp_path):
             name.removeprefix("pythonpath/assinafy_libreoffice/")
             for name in names
             if name.startswith("pythonpath/assinafy_libreoffice/")
-        } == {"__init__.py", "config.py", "oauth.py", "ui.py", "workflow.py", "deployment.json"}
+        } == {
+            "__init__.py", "config.py", "contracts.py", "oauth.py", "ui.py", "validation.py",
+            "workflow.py", "deployment.json",
+        }
         assert not any(name.startswith(("tests/", ".env", ".git", ".local/")) for name in names)
         assert not any(name.endswith("direct_url.json") for name in names)
         assert not any("tests" in Path(name).parts for name in names)

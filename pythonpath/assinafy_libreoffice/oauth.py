@@ -168,6 +168,8 @@ class OAuth:
                         and ("code" in query) != ("error" in query)
                         and bool((query.get("code") or query.get("error") or [""])[0].strip())
                     )
+                    if valid:
+                        result.update({k: v[0] for k, v in query.items()})
                     handler.send_response(200 if valid else 400)
                     handler.send_header(
                         "Content-Type",
@@ -179,8 +181,6 @@ class OAuth:
                     handler.send_header("Content-Security-Policy", CALLBACK_CSP)
                     handler.end_headers()
                     handler.wfile.write(CALLBACK_PAGE if valid else b"Retorno invalido.")
-                    if valid:
-                        result.update({k: v[0] for k, v in query.items()})
 
                 def log_message(self, *args):
                     pass

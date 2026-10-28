@@ -7,7 +7,7 @@ from com.sun.star.lang import XInitialization, XServiceInfo
 PROTOCOL = "br.com.assinafy.libreoffice:"
 IMPLEMENTATION = "br.com.assinafy.libreoffice.ProtocolHandler"
 SERVICE = "com.sun.star.frame.ProtocolHandler"
-COMMANDS = {"Send", "History", "Settings"}
+COMMANDS = {"Send", "History", "Contracts", "Settings"}
 
 
 def command_of(url):
