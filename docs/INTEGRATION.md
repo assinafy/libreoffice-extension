@@ -118,8 +118,8 @@ Errors use the same envelope with `data: null` and raise `ApiError`.
 | `signers.create(payload)` | `POST /accounts/{accountId}/signers`; contact JSON below | Signer below. |
 | `signers.update(id, payload)` | `PUT /accounts/{accountId}/signers/{id}`; only missing `government_id` and/or `whatsapp_phone_number` | Updated Signer. Existing conflicting details stop the send. |
 | `assignments.create(id, payload)` | `POST /documents/{id}/assignments`; assignment JSON below | Assignment below; sends invitations and can consume credits. |
-| `assignments.estimate_resend_cost(doc, assignment, signer)` | `POST /documents/{doc}/assignments/{assignment}/signers/{signer}/estimate-resend-cost`; no body | CostEstimate. |
-| `assignments.resend_notification(doc, assignment, signer)` | `POST /documents/{doc}/assignments/{assignment}/signers/{signer}/resend`; no body | `{"is_sent":true}`. Uses the assignment's existing channel. |
+| `assignments.estimate_resend_cost(doc, assignment, signer)` | `POST /documents/{doc}/assignments/{assignment}/signers/{signer}/estimate-resend-cost`; no body | ResendCostEstimate below. |
+| `assignments.resend_notification(doc, assignment, signer)` | `PUT /documents/{doc}/assignments/{assignment}/signers/{signer}/resend`; no body | `{"is_sent":true,"document_id":"document-id","signer_id":"signer-id"}`. Uses the assignment's existing channel. |
 | `documents.download(id, artifact)` | `GET /documents/{id}/download/{artifact}`; no body | Raw bytes: PDF, or ZIP for `bundle`. |
 | `documents.statuses()` | `GET /documents/statuses`; no body | List of `{"code":"metadata_ready","deletable":true}`. |
 | `documents.delete(id)` | `DELETE /documents/{id}`; no body | Wire `data: []`, SDK `None`; allowed only when the current status is deletable. |
@@ -312,13 +312,27 @@ notified only after every signer in the previous step finishes. Biometric
 in the Assinafy application. Biometric evidence and A1/A3 keys remain in the
 hosted signing flow; the extension never collects them.
 
+Resend pricing is distinct from assignment pricing:
+
+```json
+{
+  "total": 0.45,
+  "breakdown": [{"code": "NotificationWhatsappResend", "name": "Whatsapp Notification Resend", "cost": 0.45}],
+  "credit_balance": 10,
+  "has_sufficient_credits": true
+}
+```
+
+The dialog requires `has_sufficient_credits: true`, displays `total`, then
+performs the confirmed `PUT` resend. The API rechecks the current balance.
+
 Identity preflight checks both CPF check digits and numeric/alphanumeric CNPJ
 check digits. The algorithms follow the official
 [CPF calculation](https://cdn.tesouro.gov.br/sistemas-internos/apex/producao/sistemas/thot/arquivos/publicacoes/31907_1027694/Protocolo_arrecadacao_DARF.pdf)
 and [CNPJ technical manual](https://www.gov.br/receitafederal/pt-br/centrais-de-conteudo/publicacoes/documentos-tecnicos/cnpj/manual-dv-cnpj.pdf).
 This validates input syntax, not a person's identity; the hosted flow performs
 the verification. Resend refreshes the contact before confirmation and compares
-the confirmed email, phone and channel with a final document read before POST.
+the confirmed email, phone and channel with a final document read before PUT.
 Delivery history shows both returned error code and explanation.
 
 ## Contract lifecycle management

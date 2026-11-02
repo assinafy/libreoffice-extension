@@ -1,28 +1,23 @@
 # Assinafy para LibreOffice
 
-Extensão nativa para preparar assinaturas e acompanhar contratos do Writer,
-Calc, Impress e Draw. O documento aberto é exportado para PDF, revisado localmente
-e enviado à Assinafy após confirmação.
+Extensão nativa para preparar assinaturas e acompanhar contratos no Writer,
+Calc, Impress e Draw. O documento aberto é exportado para PDF, revisado
+localmente e enviado à Assinafy somente após confirmação.
 
 ## Instalação
 
-1. Instale o [LibreOffice estável](https://www.libreoffice.org/download/), versão
-   26.8 ou posterior, com Python/UNO 3.11+. Em distribuições Linux que separam
-   esses componentes, instale também o provedor de scripts Python do LibreOffice.
-2. Abra **Ferramentas → Gerenciador de extensões → Adicionar** e selecione
-   o arquivo `assinafy-1.3.0.oxt` baixado da distribuição Assinafy.
-3. Reinicie o LibreOffice. O menu **Assinafy** aparece nos quatro editores.
-4. Abra **Assinafy → Conectar conta** e clique em **Conectar**.
+1. Instale o LibreOffice 26.8 ou posterior com Python/UNO 3.11+. No Linux,
+   instale também o provedor de scripts Python quando a distribuição o separar.
+2. Abra **Ferramentas → Gerenciador de extensões → Adicionar**, selecione
+   `assinafy-1.3.1.oxt` e reinicie o LibreOffice.
+3. Abra **Assinafy → Conectar conta** e clique em **Conectar**.
 
-O pacote contém o SDK Assinafy e as dependências de rede. O uso normal da extensão
-não exige instalar pacotes Python separadamente. A rede deve permitir conexões
-HTTPS com TLS 1.2 ou superior aos endereços da Assinafy.
+O pacote já contém o SDK Assinafy e suas dependências. A rede deve permitir
+HTTPS com TLS 1.2 ou superior para `auth.assinafy.com.br`,
+`api.assinafy.com.br` e `integrations.assinafy.com.br`.
 
-A distribuição usa produção por padrão, com o identificador público da aplicação
-e a URL HTTPS de retorno incorporados. O usuário final apenas conecta sua conta.
-
-Para atualizar, adicione o novo `.oxt` no gerenciador e reinicie o aplicativo.
-Para remover, desconecte a conta e remova a extensão pelo mesmo gerenciador. Documentos enviados permanecem na Assinafy.
+Para atualizar, adicione o novo `.oxt` e reinicie. Para remover, desconecte a
+conta e remova a extensão; documentos já enviados permanecem na Assinafy.
 
 ## Fluxo do documento
 
@@ -31,205 +26,141 @@ flowchart LR
     A[Documento aberto] --> B[Signatários e ordem]
     B --> C[Exportar e revisar PDF]
     C --> D[Confirmar upload]
-    D --> E[Processar PDF e consultar custo]
+    D --> E[Processar e consultar custo]
     E --> F[Confirmar convites]
     F --> G[Assinaturas na Assinafy]
-    G --> H[Acompanhar e baixar artefatos]
+    G --> H[Acompanhar e baixar]
 ```
 
 ### 1. Conectar a conta
 
-**Conectar** abre o navegador padrão para login e consentimento na Assinafy.
-Escolha o workspace que a extensão poderá acessar. A conexão deve autorizar
-exatamente um workspace. A extensão não recebe a senha da conta.
+**Conectar** abre o navegador para login, consentimento e escolha de um único
+workspace. A extensão usa OAuth com PKCE e pede `documents:read`,
+`documents:write` e `offline_access`; ela nunca recebe sua senha Assinafy.
 
-As permissões solicitadas são `documents:read`, `documents:write` e
-`offline_access`. A falta de permissão de escrita impede upload, envio, reenvio
-e exclusão, além de alterações nos contratos.
-
-Para manter a conexão entre sessões, configure uma senha mestra no gerenciador
-de senhas do LibreOffice, nas opções de segurança. No macOS, as opções ficam em
-**LibreOffice → Settings/Preferências**. Sem uma senha mestra própria, a extensão
-mantém as credenciais apenas na sessão. **Desconectar** revoga a autorização e
-remove as credenciais locais.
-
-A conexão é renovada durante o uso. Cada renovação substitui o refresh token e
-inicia um novo prazo de 30 dias; após 30 dias sem renovação, conecte novamente.
+Para manter a conexão entre sessões, configure uma senha mestra própria no
+armazenamento de senhas do LibreOffice. Sem ela, os tokens ficam somente na
+sessão. Cada renovação troca o refresh token e reinicia seu prazo de 30 dias;
+após 30 dias sem uso, conecte novamente. **Desconectar** revoga a autorização e
+remove os tokens locais.
 
 ### 2. Preparar os signatários
 
-Abra o documento e selecione **Assinafy → Enviar para assinatura**.
-Adicione o nome completo e o e-mail de cada signatário. Escolha a verificação:
+Abra o documento, escolha **Assinafy → Enviar para assinatura** e adicione nome
+completo e e-mail. A extensão oferece estas verificações:
 
-| Método | Dados e comportamento |
+| Método | Requisitos |
 | --- | --- |
-| E-mail (`Email`) | Código de verificação e convite por e-mail. |
-| WhatsApp (`Whatsapp`) | Código e convite por WhatsApp; exige telefone E.164, com `+` e código do país, e plano pago. |
-| Certificado ICP-Brasil (`DigitalCertificate`) | Exige CPF/CNPJ e recurso habilitado no plano. O signatário usa seu próprio certificado A1/A3 no fluxo da Assinafy. |
-| Biometria (`IdDocumentFaceMatchBasic`) | Exige CPF válido e recurso habilitado no plano. O signatário envia documento de identidade, foto e prova de vida no fluxo da Assinafy. |
+| `Email` | Código e convite por e-mail. |
+| `Whatsapp` | Código e convite por WhatsApp; telefone E.164 e plano pago. |
+| `DigitalCertificate` | CPF/CNPJ, recurso no plano e certificado ICP-Brasil A1/A3 do signatário. |
+| `IdDocumentFaceMatchBasic` | CPF, recurso no plano, documento, foto e prova de vida no fluxo hospedado. |
 
-Escolha também a **Notificação do convite**. A opção automática usa e-mail,
-exceto na verificação WhatsApp, que exige WhatsApp. Certificado e biometria
-aceitam e-mail ou WhatsApp; cada signatário recebe exatamente um canal. O custo
-é consultado na API antes da confirmação. A extensão exige e-mail para cadastrar
-e reutilizar os contatos, inclusive quando o convite segue por WhatsApp.
+`Email` notifica por e-mail e `Whatsapp` por WhatsApp. Certificado e biometria
+aceitam um desses canais; cada signatário recebe exatamente um. O convite por
+WhatsApp exige telefone com `+` e código do país. O e-mail continua obrigatório
+para cadastrar e reutilizar contatos.
 
-Signatários na mesma etapa assinam em paralelo. Etapas diferentes definem a
-ordem. Numere as etapas a partir de 1, sem pular números. Um signatário com
-certificado deve estar sozinho em sua etapa. O mesmo
-e-mail não pode aparecer duas vezes no envio.
+Signatários na mesma etapa assinam em paralelo. As etapas começam em 1 e não
+podem ter intervalos; um signatário por certificado fica sozinho em sua etapa.
+O mesmo e-mail não pode aparecer duas vezes. CPF e CNPJ têm os dígitos
+verificados; certificados aceitam CNPJ numérico ou alfanumérico, e biometria
+aceita somente CPF.
 
-Adicione uma mensagem opcional e, se necessário, uma expiração ISO 8601 com fuso
-horário, por exemplo `2030-12-31T23:59:00Z`, pelo menos uma hora no futuro.
-Contatos existentes são reutilizados quando o nome e o e-mail correspondem.
-CPF/CNPJ e WhatsApp ausentes são preenchidos; divergências nos dados existentes
-devem ser corrigidas na Assinafy antes do envio.
-CPF e CNPJ são verificados antes do upload, incluindo os dígitos verificadores;
-CNPJ numérico e alfanumérico são aceitos para certificados.
+Mensagem e expiração são opcionais. A expiração usa RFC 3339 com fuso, como
+`2030-12-31T23:59:00Z`, e deve estar pelo menos uma hora no futuro. Contatos
+existentes são encontrados pelo e-mail: dados de identidade e telefone ausentes
+são preenchidos, mas divergências devem ser corrigidas na Assinafy.
 
-### 3. Revisar o PDF
+### 3. Revisar e enviar
 
-A extensão exporta o estado atual do documento, incluindo alterações ainda não
-salvas. A exportação usa o filtro PDF nativo de cada editor e preserva o arquivo
-original e seu local de gravação.
+A extensão exporta o estado atual, inclusive alterações ainda não salvas, sem
+mudar o arquivo original. Confira todas as páginas na prévia; no Calc, revise
+áreas de impressão e quebras. O limite é 25 MiB e 2.000 páginas.
 
-Confira todas as páginas na prévia e clique em **PDF revisado**. No Calc, confira
-as áreas de impressão e as quebras de página antes de continuar. O limite de
-upload é 25 MiB e 2.000 páginas. Arquivos temporários da prévia são removidos ao
-terminar essa etapa.
+A primeira confirmação mostra workspace, arquivo, destinatários, métodos,
+canais, telefones e etapas. Aceitá-la envia o PDF e consulta o custo sem criar
+convites. A segunda mostra também mensagem, expiração e créditos; somente ela
+cria o pedido de assinatura e envia notificações. A estimativa não reserva
+saldo, e a API revalida plano e recursos no envio.
 
-### 4. Confirmar upload e convites
+Se você cancelar depois do upload, use **Envios recentes → Acompanhar → Retomar
+envio**. A extensão baixa e revisa o PDF original, consulta o custo novamente e
+não cria outra cópia.
 
-A primeira confirmação mostra o workspace, o arquivo e os signatários. Aceitá-la
-envia o PDF e consulta o custo, sem criar os convites.
+### 4. Acompanhar e reenviar
 
-A segunda confirmação mostra destinatários, métodos, ordem, mensagem, expiração
-e créditos estimados. Somente a confirmação dessa etapa cria o pedido de
-assinatura e envia as notificações. A API verifica os recursos disponíveis no
-momento da operação; a estimativa não reserva saldo.
+Em **Assinafy → Envios recentes**, pesquise, navegue e escolha **Acompanhar**.
+**Atualizar** consulta documento e signatários. **Notificações** mostra cada
+envio ou falha e a explicação retornada pela API.
 
-Se você cancelar após o upload, o documento permanece preparado na Assinafy.
-Abra **Envios recentes → Acompanhar → Retomar envio** para revisar o PDF original e
-definir os signatários novamente, sem repetir o upload.
-
-### 5. Acompanhar e recuperar
-
-Em **Assinafy → Envios recentes**, pesquise, navegue pelas páginas e selecione
-**Acompanhar**. **Atualizar** consulta o status do documento e de cada signatário.
-**Reenviar convite** consulta o custo e pede confirmação para o destinatário
-selecionado, mostrando o canal e o telefone. **Notificações** mostra o histórico
-de envio e falha, com a explicação retornada pela API para o signatário selecionado.
-Se o destinatário mudar durante a confirmação, atualize e confirme novamente. Os convites de
+**Reenviar convite** atualiza o destinatário, consulta o custo e mostra e-mail,
+canal, telefone e créditos antes de pedir confirmação. Uma leitura final compara
+e-mail, telefone e canal; qualquer mudança exige nova confirmação. Convites de
 etapas futuras aguardam a conclusão da etapa anterior.
 
-Na biometria, `InReview` indica que o workspace precisa revisar a identidade no
-painel Assinafy. O signatário pode assinar durante essa análise; o documento
-permanece em `pending_identity_review` até a decisão. A extensão não coleta
-documentos de identidade, selfies ou chaves de certificados.
+Na biometria, `InReview` e `pending_identity_review` exigem decisão no painel
+Assinafy. A extensão exibe a situação, mas documento de identidade, selfie,
+decisão da revisão e chaves A1/A3 permanecem no fluxo hospedado.
 
-Depois de uma falha ou timeout, consulte o status antes de repetir o envio. Uma
-resposta perdida pode ter ocorrido depois de a Assinafy aceitar a operação.
-A extensão conserva o identificador conhecido do documento e não repete
-automaticamente operações após falhas de rede. Se o upload terminar no servidor
-sem retornar um identificador, localize o documento pela lista antes de tentar
-novamente.
+Depois de falha ou timeout, atualize o documento antes de repetir: a resposta
+pode ter se perdido após a operação. A extensão não repete escritas ambíguas e
+conserva o ID conhecido para recuperação.
 
-### 6. Baixar os resultados
+### 5. Baixar ou excluir
 
-Escolha o artefato em **Acompanhar → Baixar**:
+**Baixar** oferece:
 
 | Artefato | Conteúdo |
 | --- | --- |
 | `original` | PDF enviado. |
 | `certificated` | PDF certificado pela Assinafy. |
 | `certificate-page` | Página de certificação. |
-| `pades` | PDF com assinaturas ICP-Brasil; disponível quando o documento possui esse tipo de assinatura. |
-| `bundle` | ZIP dos artefatos disponíveis. |
+| `pades` | PDF com assinaturas ICP-Brasil, quando disponível. |
+| `bundle` | ZIP com os artefatos disponíveis. |
 
-A disponibilidade depende do processamento e do tipo de assinatura. Escolha um
-novo nome de arquivo: a extensão preserva arquivos locais já existentes.
-Documentos com signatários ICP-Brasil selecionam **PDF PAdES** inicialmente.
-
-**Excluir** remove o documento remoto somente quando o status retornado pela API
-permite a operação. A ação exige confirmação. Baixe os arquivos necessários
-antes de excluir. A extensão não apresenta a exclusão como cancelamento que
-preserva assinaturas.
-Em revisão de identidade, a exclusão cancela o documento e notifica os signatários;
+A extensão não sobrescreve arquivos locais. **Excluir** exige confirmação e só
+funciona quando o status atual é removível. Baixe antes o que precisa guardar.
+Em revisão de identidade, excluir cancela o documento e notifica os signatários;
 a confirmação informa essa consequência.
 
 ## Gestão de contratos
 
-1. Abra **Envios recentes → Acompanhar → Contrato** em um documento já enviado.
-   Clique em **Editar termos** para cadastrar contraparte, CPF/CNPJ, valor,
-   moeda, início, término, prazo de renovação e aviso prévio. Use datas
-   `AAAA-MM-DD` e ponto decimal no valor. Revise e confirme as alterações.
-2. Acompanhe os contratos em **Assinafy → Gestão de contratos**. Pesquise pelo
-   nome do documento, filtre a situação e navegue pelas páginas. **Atualizar**
-   consulta os termos atuais. A leitura continua disponível sem o recurso no
-   plano; cadastrar ou alterar termos exige um plano com gestão de contratos.
-3. Para um aditivo, documento de renovação ou rescisão, abra **Contrato** no
-   próprio instrumento, ainda sem termos. Clique em **Vincular**, informe o ID
-   do documento principal e selecione o tipo. Preencha apenas os termos que
-   mudam e confirme. A alteração vale quando o instrumento for assinado, ou
-   imediatamente se já estiver assinado. **Instrumentos** mostra a família,
-   a situação e eventuais impedimentos. Um instrumento aplicado não é editável;
-   um pendente pode ser editado ou desvinculado após confirmação.
-4. **Renovar** confirma o período atual e avança o término pelo prazo de
-   renovação, ou 12 meses quando não definido, até uma data futura. Mantém o
-   valor. **Encerrar** pede um motivo opcional e confirmação; o documento e
-   suas assinaturas permanecem disponíveis. Um contrato encerrado não pode
-   ser renovado; um expirado pode.
+Em **Envios recentes → Acompanhar → Contrato**, cadastre contraparte, CPF/CNPJ,
+valor, moeda, datas, renovação automática, prazo de renovação e aviso prévio.
+Revise e confirme toda alteração. Campos vazios removem o valor; responsável,
+metadados e referências externas que não aparecem no formulário são preservados.
 
-Deixar um campo existente vazio remove seu valor. Em um instrumento pendente,
-isso remove a alteração daquele campo, preservando o valor do contrato
-principal. A opção de renovação automática nos aditivos tem três estados:
-ativada, desativada e indefinida (sem alteração). Campos administrados no painel,
-como responsável, metadados e referências externas, são preservados.
+**Assinafy → Gestão de contratos** pesquisa, filtra e acompanha termos. Leituras
+continuam disponíveis sem o recurso do plano; escritas dependem dele. Para
+aditivo, renovação ou rescisão, abra o documento do instrumento, clique em
+**Vincular**, informe o documento principal e os termos alterados. Instrumentos
+pendentes podem ser editados ou desvinculados com confirmação; aplicados são
+somente leitura.
 
-A API verifica as regras, o plano e alterações concorrentes. Se alguém mudar
-o contrato durante a edição, **Atualizar** e uma nova confirmação são necessários.
-Após timeout, consulte os termos antes de repetir: a operação pode ter sido
-concluída. O acompanhamento não envia convites de assinatura. Os avisos de
-renovação e vencimento seguem o processamento horário da Assinafy, o calendário
-de Brasília e as preferências de notificação do responsável.
+**Renovar** confirma o período atual e avança o término pelo prazo configurado,
+inclusive em contratos expirados. **Encerrar** aceita um motivo e preserva
+documento e assinaturas; contratos encerrados não podem ser renovados. Mudanças
+concorrentes exigem atualização e nova confirmação. Avisos e transições seguem
+o calendário de Brasília e as preferências do responsável na Assinafy.
 
-## Conexão de produção
+## Segurança e solução de problemas
 
-A extensão já inclui a configuração pública da aplicação Assinafy. Não é
-necessário criar um aplicativo OAuth nem informar credenciais de integração.
-
-| Serviço | Endereço |
-| --- | --- |
-| Login e consentimento | `https://auth.assinafy.com.br` |
-| API | `https://api.assinafy.com.br/v1` |
-| Retorno ao LibreOffice | `https://integrations.assinafy.com.br/libreoffice/oauth-callback` |
-
-Após autorizar no navegador, a página de retorno encaminha a conexão ao
-LibreOffice neste computador. Mantenha o LibreOffice aberto durante esse
-processo. Se a conexão expirar, inicie novamente pelo menu **Conectar conta**.
-
-A extensão solicita leitura e envio de documentos e renovação da conexão. Ela
-não solicita acesso a templates. Os documentos são enviados somente após a
-confirmação do upload; os convites dependem de uma segunda confirmação. O login
-e o consentimento acontecem no site da Assinafy.
-
-## Solução de problemas
+Credenciais ficam no armazenamento de senhas do LibreOffice; PDFs temporários
+são removidos depois da prévia. A extensão não solicita acesso a templates ou
+webhooks e nunca altera endpoints do workspace.
 
 | Situação | Ação |
 | --- | --- |
-| Menu ausente | Confira se a extensão está habilitada, se o provedor Python está instalado e reinicie o LibreOffice. |
-| Configuração indisponível | Reinstale o pacote oficial da extensão. |
-| Não foi possível concluir a conexão | Mantenha o LibreOffice aberto, confira o acesso aos endereços acima e inicie uma nova conexão. |
-| Conexão não permanece após fechar | Configure uma senha mestra própria no armazenamento de senhas do LibreOffice. |
-| Recursos insuficientes | Confira o plano e o saldo do workspace na Assinafy; retome o documento preparado. |
-| PDF com paginação inesperada | Ajuste impressão/layout no editor e gere outra prévia antes de enviar. |
-| Timeout de envio | Atualize o status e confirme se o pedido foi criado antes de repetir. |
+| Menu ausente | Confira a extensão e o provedor Python; reinicie o LibreOffice. |
+| Conexão não conclui | Mantenha o LibreOffice aberto, confira a rede e conecte novamente. |
+| Conexão não permanece | Configure uma senha mestra própria no LibreOffice. |
+| Recursos insuficientes | Confira plano e saldo; retome o documento preparado. |
+| PDF inesperado | Ajuste layout, impressão ou quebras e gere outra prévia. |
+| Timeout de envio | Atualize o status antes de repetir. |
 
-## Referências
-
-- [API pública Assinafy](https://api.assinafy.com.br/v1/docs)
-- [Integração, payloads e desenvolvimento](docs/INTEGRATION.md)
-- [SDK Python Assinafy](https://github.com/assinafy/python-sdk)
-- [LibreOffice](https://www.libreoffice.org/)
-
-Licença MIT. As dependências conservam suas próprias licenças no pacote.
+Detalhes de endpoints, payloads, recuperação, desenvolvimento e webhooks estão
+em [docs/INTEGRATION.md](docs/INTEGRATION.md). Consulte também a
+[API Assinafy](https://api.assinafy.com.br/v1/docs), o
+[SDK Python](https://github.com/assinafy/python-sdk) e o
+[LibreOffice](https://www.libreoffice.org/). Licença MIT.

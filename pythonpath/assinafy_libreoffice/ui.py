@@ -741,13 +741,13 @@ class App:
                 "Consultando custo",
                 lambda: workflow.resend(document_id, signer["id"], estimate_only=True),
             )
-            if estimate.get("has_sufficient_resources") is not True:
+            if estimate.get("has_sufficient_credits") is not True:
                 raise ValueError("O workspace não tem recursos suficientes para reenviar.")
             if self.box(
                 "Reenviar convite para " + (signer.get("email") or signer["id"]) + "?\n"
                 "Canais: " + ", ".join(signer.get("notification_methods") or ["Email"]) + "\n"
                 "WhatsApp: " + (signer.get("whatsapp_phone_number") or "—") + "\n"
-                "Créditos estimados: " + str(estimate.get("total_credits", "—")),
+                "Créditos estimados: " + str(estimate.get("total", "—")),
                 query=True,
             ):
                 self.busy(

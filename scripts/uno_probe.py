@@ -179,7 +179,7 @@ def check_native(ctx, profile, output):
             if not estimate_only:
                 assert confirmed == signer
             events.append("estimate" if estimate_only else "resend")
-            return {"has_sufficient_resources": True, "total_credits": 0.45}
+            return {"has_sufficient_credits": True, "total": 0.45}
 
         app.workflow = SimpleNamespace(document=lambda _: doc, resend=resend,
                                        delete=lambda _: events.append("delete"))
