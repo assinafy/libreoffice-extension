@@ -9,7 +9,7 @@ localmente e enviado à Assinafy somente após confirmação.
 1. Instale o LibreOffice 26.8 ou posterior com Python/UNO 3.11+. No Linux,
    instale também o provedor de scripts Python quando a distribuição o separar.
 2. Abra **Ferramentas → Gerenciador de extensões → Adicionar**, selecione
-   `assinafy-1.3.1.oxt` e reinicie o LibreOffice.
+   `assinafy-1.3.2.oxt` e reinicie o LibreOffice.
 3. Abra **Assinafy → Conectar conta** e clique em **Conectar**.
 
 O pacote já contém o SDK Assinafy e suas dependências. A rede deve permitir
@@ -82,7 +82,8 @@ A primeira confirmação mostra workspace, arquivo, destinatários, métodos,
 canais, telefones e etapas. Aceitá-la envia o PDF e consulta o custo sem criar
 convites. A segunda mostra também mensagem, expiração e créditos; somente ela
 cria o pedido de assinatura e envia notificações. A estimativa não reserva
-saldo, e a API revalida plano e recursos no envio.
+saldo. O envio limita os créditos ao total confirmado; se o custo subir, consulte
+o custo e confirme novamente. A API revalida plano e recursos no envio.
 
 Se você cancelar depois do upload, use **Envios recentes → Acompanhar → Retomar
 envio**. A extensão baixa e revisa o PDF original, consulta o custo novamente e
@@ -96,7 +97,8 @@ envio ou falha e a explicação retornada pela API.
 
 **Reenviar convite** atualiza o destinatário, consulta o custo e mostra e-mail,
 canal, telefone e créditos antes de pedir confirmação. Uma leitura final compara
-e-mail, telefone e canal; qualquer mudança exige nova confirmação. Convites de
+e-mail, telefone e canal; qualquer mudança exige nova confirmação. Sem um canal
+retornado pela API, o reenvio fica bloqueado até a atualização. Convites de
 etapas futuras aguardam a conclusão da etapa anterior.
 
 Na biometria, `InReview` e `pending_identity_review` exigem decisão no painel
@@ -143,6 +145,16 @@ inclusive em contratos expirados. **Encerrar** aceita um motivo e preserva
 documento e assinaturas; contratos encerrados não podem ser renovados. Mudanças
 concorrentes exigem atualização e nova confirmação. Avisos e transições seguem
 o calendário de Brasília e as preferências do responsável na Assinafy.
+
+## Envelopes e assinatura incorporada
+
+Crie e gerencie envelopes no painel Assinafy. Seus documentos continuam
+acessíveis em **Envios recentes**, com acompanhamento, contratos e downloads
+individuais. Um documento de envelope aberto não pode ser excluído isoladamente;
+confira o envelope no painel antes de cancelá-lo.
+
+Embed atende aplicações web com um backend próprio; tokens OAuth de aplicativos
+não podem criar sessões Embed. A extensão usa os convites hospedados da Assinafy.
 
 ## Segurança e solução de problemas
 

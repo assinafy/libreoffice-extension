@@ -11,7 +11,6 @@ from datetime import UTC, datetime, timedelta
 from assinafy import ApiError, AssinafyClient, AssinafyError, ValidationError
 from assinafy.utils import validate_datetime, validate_email, validate_signer_methods
 
-from .contracts import Contracts
 from .oauth import UNSENT, ConnectionError
 from .validation import validate_taxpayer_id
 
@@ -120,6 +119,14 @@ def error_message(error):
             "Verifique a rede e tente novamente."
         )
     if isinstance(error, ApiError):
+        code = error.response_data.get("code") if isinstance(error.response_data, dict) else None
+        if error.status_code == 409:
+            return {
+                "ContractChanged": "O contrato mudou. Atualize e confirme novamente.",
+                "EnvelopeOpen": "O envelope ainda está aberto. Consulte-o antes de excluir.",
+                "DocumentNotReady": "O documento não permite esta operação. Atualize seu status.",
+                "CreditCeilingExceeded": "O custo aumentou. Consulte o custo e confirme novamente.",
+            }.get(code, "O recurso mudou. Atualize seu status e confirme novamente.")
         if error.status_code == 400 and isinstance(error.response_data, dict):
             problems = error.response_data.get("errors")
             if isinstance(problems, list) and problems:
@@ -132,7 +139,6 @@ def error_message(error):
             401: "Sua autorização expirou. Reconecte a conta.",
             403: "Operação não autorizada. Confira o workspace, as permissões e o plano.",
             404: "O documento ou recurso não está disponível.",
-            409: "O contrato mudou desde a leitura. Atualize e confira os dados antes de salvar.",
             429: "Limite de requisições atingido. Aguarde e tente novamente.",
         }.get(
             error.status_code, "A Assinafy está indisponível. Consulte o status antes de reenviar."
@@ -252,7 +258,7 @@ class Workflow:
             write=True,
         )
 
-    def send(self, document_id, recipients, message="", expires_at=None):
+    def send(self, document_id, recipients, message="", expires_at=None, *, max_total_credits=None):
         validate_request(recipients, message, expires_at)
         doc = self.document(document_id)
         if doc.get("assignment"):
@@ -308,8 +314,11 @@ class Workflow:
                 signer_id = require_id(signer)
                 signers.append({"id": signer_id, "step": recipient.step, **recipient.pricing()})
             payload = {"method": "virtual", "signers": signers, "message": message}
+            if max_total_credits is not None:
+                payload["max_total_credits"] = max_total_credits
             if expires_at:
                 payload["expires_at"] = expires_at
+            validate_request(recipients, message, expires_at)
             result = self.call(lambda c: c.assignments.create(document_id, payload), write=True)
             require_id(result)
         except Exception as exc:
@@ -340,6 +349,8 @@ class Workflow:
         signer = next((s for s in assignment.get("signers", []) if s.get("id") == signer_id), None)
         if signer is None:
             raise ValueError("O signatário não pertence a este envio.")
+        if signer.get("notification_methods") not in (["Email"], ["Whatsapp"]):
+            raise ValueError("O canal do convite não está disponível. Atualize o documento.")
         if not estimate_only and (
             confirmed is None or any(
                 signer.get(key) != confirmed.get(key)
@@ -356,33 +367,37 @@ class Workflow:
             write=True,
         )
 
-    def _contracts(self, action, *, write=False):
-        return self.call(
-            lambda c: action(Contracts(c.get_http_client(), self.account["id"])), write=write
-        )
-
     def list_contracts(self, page=1, search="", status=""):
         if isinstance(page, bool) or not isinstance(page, int) or page < 1:
             raise ValueError("Página inválida.")
-        return self._contracts(lambda c: c.list({
+        return self.call(lambda c: c.contracts.list({
             "page": page, "per_page": 20, "search": search, "status": status or None,
             "sort": "-updated_at", "expand": "document",
         }))
 
     def contract(self, document_id):
-        return self._contracts(lambda c: c.get(document_id))
+        try:
+            return self.call(lambda c: c.contracts.get(document_id))
+        except ApiError as exc:
+            if (
+                exc.status_code == 404
+                and isinstance(exc.response_data, dict)
+                and exc.response_data.get("code") == "NoContractTerms"
+            ):
+                return None
+            raise
 
     def related_contract(self, document_id):
-        return self._contracts(lambda c: c.related(document_id))
+        return self.call(lambda c: c.contracts.related(document_id))
 
     def update_contract(self, document_id, payload):
-        return self._contracts(lambda c: c.update(document_id, payload), write=True)
+        return self.call(lambda c: c.contracts.update(document_id, payload), write=True)
 
     def renew_contract(self, document_id, payload):
-        return self._contracts(lambda c: c.renew(document_id, payload), write=True)
+        return self.call(lambda c: c.contracts.renew(document_id, payload), write=True)
 
     def terminate_contract(self, document_id, payload):
-        return self._contracts(lambda c: c.terminate(document_id, payload), write=True)
+        return self.call(lambda c: c.contracts.terminate(document_id, payload), write=True)
 
     def delete(self, document_id):
         doc = self.document(document_id)

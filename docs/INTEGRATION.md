@@ -2,10 +2,10 @@
 
 The [live API reference](https://api.assinafy.com.br/v1/docs) and its
 [OpenAPI document](https://api.assinafy.com.br/v1/docs/openapi.json) define the
-wire contract. The extension bundles the published Assinafy Python SDK 2.0.1.
+wire contract. The extension bundles the published Assinafy Python SDK 2.3.0.
 Every SDK resource method includes request and response documentation in its
 docstring; the complete SDK reference is in the
-[official repository](https://github.com/assinafy/python-sdk/tree/v2.0.1).
+[official repository](https://github.com/assinafy/python-sdk/tree/v2.3.0).
 
 ## Runtime and boundaries
 
@@ -18,9 +18,11 @@ of support rather than an LTS edition; see the
 export, preview, native confirmations and the password container. `workflow.py`
 uses the SDK for account, contact, document and assignment operations. `oauth.py`
 implements the public application's PKCE callback and token rotation.
-`contracts.py` supplies the six CLM operations absent from SDK 2.0.1 through
-the public `get_http_client()` and the SDK's `BaseResource` response/error
-helpers. It uses the same authenticated client, TLS policy and workspace.
+`contracts.py` defines native contract fields and parses form input.
+`workflow.py` calls the SDK's `client.contracts` resource for all six CLM
+operations, using the same authenticated client, TLS policy and workspace.
+Only `Workflow.contract()` converts `404/NoContractTerms` to `None`; other
+errors propagate. Explicit nulls and unknown response fields are preserved.
 `validation.py` shares CPF/CNPJ checks between signer and contract forms.
 
 Network operations run in a worker. Document access, credential storage and
@@ -323,7 +325,8 @@ Resend pricing is distinct from assignment pricing:
 }
 ```
 
-The dialog requires `has_sufficient_credits: true`, displays `total`, then
+The dialog requires a returned single Email or Whatsapp channel and
+`has_sufficient_credits: true`, displays `total`, then
 performs the confirmed `PUT` resend. The API rechecks the current balance.
 
 Identity preflight checks both CPF check digits and numeric/alphanumeric CNPJ
@@ -343,17 +346,17 @@ assignment. OAuth uses the existing `documents:read` and `documents:write`
 scopes. The account-scoped routes enforce workspace ownership. Reads remain
 available when the plan no longer permits writes.
 
-| Adapter method | Request relative to `/v1` | Unwrapped return |
+| SDK method | Request relative to `/v1` | Unwrapped return |
 | --- | --- | --- |
-| `Contracts.list(params)` | `GET /accounts/{accountId}/contracts`; query below | `{"data":[DocumentContract],"meta":{"current_page":1,"per_page":20,"total":1,"last_page":1}}`. |
-| `Contracts.get(document_id)` | `GET /accounts/{accountId}/documents/{documentId}/contract`; no body | DocumentContract with amendments, or DocumentContractAmendment; `None` only for `404` with `code: NoContractTerms`. |
-| `Contracts.update(document_id, payload)` | `PUT /accounts/{accountId}/documents/{documentId}/contract`; partial terms or amendment JSON below | DocumentContract or DocumentContractAmendment. |
-| `Contracts.related(document_id)` | `GET /accounts/{accountId}/documents/{documentId}/contract/related`; no body | Root DocumentContract with amendments, from any document in the family. |
-| `Contracts.renew(document_id, payload)` | `POST /accounts/{accountId}/documents/{documentId}/contract/renew`; renewal JSON below | DocumentContract with advanced end date and term. |
-| `Contracts.terminate(document_id, payload)` | `POST /accounts/{accountId}/documents/{documentId}/contract/terminate`; optional reason/precondition JSON | DocumentContract with `status: terminated`. |
+| `contracts.list(params)` | `GET /accounts/{accountId}/contracts`; query below | `{"data":[DocumentContract],"meta":{"current_page":1,"per_page":20,"total":1,"last_page":1}}`. |
+| `contracts.get(document_id)` | `GET /accounts/{accountId}/documents/{documentId}/contract`; no body | DocumentContract with amendments, or DocumentContractAmendment; the workflow maps only `404/NoContractTerms` to `None`. |
+| `contracts.update(document_id, payload)` | `PUT /accounts/{accountId}/documents/{documentId}/contract`; partial terms or amendment JSON below | DocumentContract or DocumentContractAmendment. |
+| `contracts.related(document_id)` | `GET /accounts/{accountId}/documents/{documentId}/contract/related`; no body | Root DocumentContract with amendments, from any document in the family. |
+| `contracts.renew(document_id, payload)` | `POST /accounts/{accountId}/documents/{documentId}/contract/renew`; renewal JSON below | DocumentContract with advanced end date and term. |
+| `contracts.terminate(document_id, payload)` | `POST /accounts/{accountId}/documents/{documentId}/contract/terminate`; optional reason/precondition JSON | DocumentContract with `status: terminated`. |
 
 The native list sends `page`, `per-page=20`, `search`, optional `status`,
-`sort=-updated_at`, and `expand=document`. The adapter also accepts the API's
+`sort=-updated_at`, and `expand=document`. The SDK also accepts the API's
 `counterparty`, `end_date_from`, `end_date_to`, `ending_within_days`,
 `external_system` and `external_id` filters. Status may be a comma-separated
 combination of `draft,active,expired,terminated`; sort permits `end_date` or
@@ -513,7 +516,10 @@ polls on demand and registers no webhook or background scheduler.
 2. Confirm workspace, PDF and recipients before upload.
 3. Save the returned document ID, wait for metadata, and estimate cost.
 4. Confirm recipients, verification, channel, phone, steps, message, expiration
-   and credits before creating the assignment. Cancel preserves the upload.
+   and credits before creating the assignment. Send the confirmed `total_credits`
+   as `max_total_credits`, including zero. `409/CreditCeilingExceeded` requires
+   another estimate and confirmation. Recheck expiration after resolving contacts,
+   immediately before assignment creation. Cancel preserves the upload.
 5. After an uncertain send, inspect the document before trying again. Writes
    never retry after network errors. A definite 401 permits one refresh and
    retry, with scopes checked again before the operation.
@@ -522,6 +528,94 @@ polls on demand and registers no webhook or background scheduler.
 7. Download original, certificated, certificate-page, PAdES or bundle to a new
    filename. Existing local files are preserved. Delete requires native user
    confirmation and the API's current `deletable` status.
+
+## Envelopes and embedded signing
+
+These API resources are included in SDK 2.3.0. The four native commands manage
+individual documents and contracts; envelope management stays in the Assinafy
+application. Documents inside envelopes retain their assignments, artifacts and
+contract terms. `409/EnvelopeOpen` prevents individual deletion while their
+envelope is open; never automatically cancel an envelope to make deletion work.
+
+Envelope paths are `/accounts/{accountId}/envelopes`, relative to `/v1`.
+`client.envelopes.list({"page":1,"per_page":20,"search":"Example","status":"open"})`
+uses GET and returns `{"data":[Envelope],"meta":{...}}`. `get(id)` returns one
+Envelope. `activities(id)` reads its paginated document activity.
+`download(id, "original")` returns ZIP bytes; artifact names also include
+`certificated`, `certificate-page`, `pades` and `bundle`.
+
+Creation and cost estimation use the same body:
+
+```json
+{
+  "name": "Example envelope",
+  "message": "Please review these documents.",
+  "signers": [{"id": "signer-id", "verification_method": "Email", "notification_methods": ["Email"]}],
+  "documents": [
+    {"id": "document-one", "method": "virtual", "signer_ids": ["signer-id"]},
+    {"id": "document-two", "method": "virtual", "signer_ids": ["signer-id"]}
+  ]
+}
+```
+
+`envelopes.estimate_cost(payload)` POSTs to `/estimate-cost` and returns the
+CostEstimate shape above without invitations or charges. After confirmation,
+`envelopes.create(payload, idempotency_key="NEW-KEY-FOR-THIS-SEND")` POSTs to the
+collection; add the estimate's `total_credits` as `max_total_credits` to cap spend.
+A successful response has this shape (additional fields are retained):
+
+```json
+{
+  "resource": "envelope",
+  "id": "envelope-id",
+  "name": "Example envelope",
+  "message": "Please review these documents.",
+  "created_at": "2026-11-24T12:00:00Z",
+  "documents": [{"id": "document-one", "position": 1, "name": "Example.pdf", "status": "pending_signature", "signers": [], "artifacts": {}}],
+  "counts": {"pending_signature": 2},
+  "signing_urls": [{"signer_id": "signer-id", "url": "SIGNING_URL", "embedded": false}]
+}
+```
+
+Use up to 20 ready, unassigned documents and 20 unique workspace signers, with
+no steps; each certificate signer must be alone on each of their virtual
+documents. Envelope totals allow 2,000 fields and 100 copy receivers. One
+invitation covers a signer's documents. Charges count one document and each
+notification/biometric check once, but each certificate signature per document.
+Signatures and downloads remain per document; signing URLs are credentials.
+Creation, estimate and add-document require the Envelopes plan feature.
+OAuth reads use `documents:read`, writes `documents:write`.
+
+`update(id, {"name":"New name","message":null,"document_ids":[...]})` PATCHes
+an envelope without sending invitations. `add_document(id, document)` POSTs to
+`/{id}/documents` and notifies its signers. `remove_document(id, document_id)`
+DELETEs that relation, cancelling the open document and notifying its people.
+`cancel(id)` PUTs to `/{id}/cancel` and returns per-document results, preserving
+completed signatures. `delete(id)` DELETEs only a closed envelope and preserves
+its documents. `resend_notification(id, signer_id)` PUTs to
+`/{id}/signers/{signer_id}/resend`. All notification/cancellation/deletion
+operations require explicit user confirmation. Full payload and response
+contracts are in the SDK resource docstrings and live reference.
+
+Embed is a backend/web integration: OAuth application tokens cannot mint
+sessions or manage embed origins. Never add an API key to the extension to
+bypass this boundary. A backend registers exact HTTPS origins through
+`accounts.list_embed_origins/add_embed_origin/update_embed_origin/delete_embed_origin`.
+Creation sends `{"origin":"https://app.example.invalid"}` and returns an origin
+object with `id`, `origin` and `created_at`. Mark compatible Email
+or Whatsapp signers `embedded:true` during assignment/envelope creation.
+Then `assignments.create_embed_session(document_id, assignment_id, signer_id)`
+POSTs without a body to the signer's `/embed-sessions` route and returns
+`{"url":"SINGLE_USE_URL","expires_at":"RFC3339_TIMESTAMP"}`.
+Load it inside the registered origin within five minutes using the official
+Embed SDK. Each opening needs a new token; never log the URL. Browser events
+must be checked against document status on the backend before taking action.
+Certificate and biometric signers use the hosted signing flow.
+
+Production and staging are separate deployments. Consult each live spec before
+using a new route. Scheduled sends, watchers, signer capacities, document-level
+notification history and envelope reminder pricing are currently staging-only;
+the production extension does not call them.
 
 ## Signed webhooks
 

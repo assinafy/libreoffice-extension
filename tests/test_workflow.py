@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from assinafy import AssinafyClient, AssinafyError
+from assinafy import ApiError, AssinafyClient, AssinafyError
 from assinafy_libreoffice.oauth import ConnectionError, OAuth
 from assinafy_libreoffice.workflow import (
     Recipient,
@@ -27,7 +27,8 @@ def backend(monkeypatch):
     events, records = [], []
     doc = {"id": "doc1", "account_id": "account1", "status": "metadata_ready", "assignment": None}
     failures = {}
-    signer = {"id": "signer1", "full_name": RECIPIENT.full_name, "email": CONTACT}
+    signer = {"id": "signer1", "full_name": RECIPIENT.full_name, "email": CONTACT,
+              "notification_methods": ["Email"]}
 
     def request(req):
         path = req.url.path.removeprefix("/v1/")
@@ -469,3 +470,53 @@ def test_resend_requires_confirmed_destination(backend):
     with pytest.raises(ValueError, match="destinatário mudou"):
         workflow.resend("doc1", "signer1")
     assert not any(path.endswith("/resend") for _, path, _ in events)
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("ContractChanged", "contrato mudou"), ("EnvelopeOpen", "envelope ainda"),
+    ("DocumentNotReady", "documento não permite"), ("OtherConflict", "recurso mudou"),
+    ("CreditCeilingExceeded", "custo aumentou"),
+])
+def test_conflicts_explain_the_affected_resource(code, expected):
+    assert expected in error_message(ApiError("Conflict", 409, {"code": code}))
+
+
+def test_expiration_rechecked_after_contact_resolution(backend, monkeypatch):
+    workflow, events, _, _, _ = backend
+    now = datetime.now(UTC)
+
+    class Clock:
+        @staticmethod
+        def now(_):
+            return now + timedelta(minutes=2 if any(
+                path.endswith("/signers") for _, path, _ in events
+            ) else 0)
+
+        fromisoformat = datetime.fromisoformat
+
+    monkeypatch.setattr("assinafy_libreoffice.workflow.datetime", Clock)
+    with pytest.raises(AssinafyError) as exc:
+        workflow.send("doc1", [RECIPIENT], expires_at=(now + timedelta(minutes=61)).isoformat())
+    assert "hora" in error_message(exc.value)
+    assert not any(path.endswith("/assignments") for _, path, _ in events)
+
+
+def test_send_caps_spending_at_confirmed_estimate(backend):
+    workflow, events, _, _, failures = backend
+    failures[("POST", "documents/doc1/assignments")] = 409
+    with pytest.raises(AssinafyError):
+        workflow.send("doc1", [RECIPIENT], max_total_credits=0)
+    writes = [json.loads(body) for _, path, body in events if path.endswith("/assignments")]
+    assert len(writes) == 1 and writes[0]["max_total_credits"] == 0
+
+
+@pytest.mark.parametrize("channels", [None, [], ["SMS"], ["Email", "Whatsapp"]])
+def test_resend_requires_a_known_single_channel(backend, channels):
+    workflow, events, _, doc, _ = backend
+    workflow.send("doc1", [RECIPIENT])
+    signer = doc["assignment"]["signers"][0]
+    signer["notification_methods"] = channels
+    for estimate in (True, False):
+        with pytest.raises(ValueError, match="canal do convite"):
+            workflow.resend("doc1", "signer1", estimate_only=estimate, confirmed=dict(signer))
+    assert not any(path.endswith(("/resend", "/estimate-resend-cost")) for _, path, _ in events)

@@ -110,7 +110,8 @@ def check_native(ctx, profile, output):
             events.append("upload")
             return {"document_id": "test-document", "estimate": estimate}
 
-        def send(*args):
+        def send(*args, max_total_credits):
+            assert max_total_credits == estimate["total_credits"]
             events.append("send")
             return {"id": "test-assignment"}
 

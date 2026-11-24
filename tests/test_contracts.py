@@ -3,8 +3,8 @@ import time
 
 import httpx
 import pytest
-from assinafy import ApiError, AssinafyClient, AssinafyError
-from assinafy_libreoffice.contracts import Contracts, parse_term
+from assinafy import ApiError, AssinafyError
+from assinafy_libreoffice.contracts import parse_term
 from assinafy_libreoffice.oauth import ConnectionError, OAuth
 from assinafy_libreoffice.validation import validate_taxpayer_id
 from assinafy_libreoffice.workflow import Workflow, error_message
@@ -169,7 +169,7 @@ def test_contract_validation_shows_all_returned_fields(backend):
         {"field": "currency", "code": "Invalid"},
     ])
     with pytest.raises(ApiError) as exc:
-        workflow.update_contract("doc1", {"value": -1})
+        workflow.update_contract("doc1", {"value": 1})
     assert "value: Valor inválido" in error_message(exc.value)
     assert "currency: Invalid" in error_message(exc.value)
 
@@ -205,8 +205,3 @@ def test_contract_form_field_parsing(text, kind, expected):
 def test_contract_form_rejects_invalid_fields(text, kind):
     with pytest.raises(ValueError):
         parse_term(text, kind)
-
-
-def test_adapter_uses_public_sdk_transport():
-    with AssinafyClient(token="test-token", account_id="account1") as client:
-        assert Contracts(client.get_http_client(), "account1")._http is client.get_http_client()

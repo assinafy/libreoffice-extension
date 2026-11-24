@@ -622,7 +622,10 @@ class App:
         ):
             return {"status": "prepared", "document_id": document_id}
         assignment = self.busy(
-            "Enviando convites", lambda: workflow.send(document_id, recipients, message, expires_at)
+            "Enviando convites", lambda: workflow.send(
+                document_id, recipients, message, expires_at,
+                max_total_credits=estimate["total_credits"],
+            )
         )
         self.box("Convites enviados.\nDocumento: " + document_id)
         return {"status": "sent", "document_id": document_id, "assignment_id": assignment["id"]}
@@ -745,7 +748,8 @@ class App:
                 raise ValueError("O workspace não tem recursos suficientes para reenviar.")
             if self.box(
                 "Reenviar convite para " + (signer.get("email") or signer["id"]) + "?\n"
-                "Canais: " + ", ".join(signer.get("notification_methods") or ["Email"]) + "\n"
+                "Canais: " + ", ".join(signer.get("notification_methods") or ["não informado"])
+                + "\n"
                 "WhatsApp: " + (signer.get("whatsapp_phone_number") or "—") + "\n"
                 "Créditos estimados: " + str(estimate.get("total", "—")),
                 query=True,
@@ -764,7 +768,7 @@ class App:
             history = signer.get("notification_history") or []
             self.box(
                 "Notificações: " + signer.get("full_name", "") + "\n"
-                + "Canais: " + ", ".join(signer.get("notification_methods") or ["Email"])
+                + "Canais: " + ", ".join(signer.get("notification_methods") or ["não informado"])
                 + "\n\n" + ("\n".join(
                     f"{entry.get('event', '')}: {entry.get('status', '')} · "
                     f"{entry.get('sent_at') or entry.get('failed_at') or '—'} · "
