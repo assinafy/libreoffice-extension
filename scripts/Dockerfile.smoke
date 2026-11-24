@@ -8,8 +8,10 @@ RUN apt-get update \
     && archive="LibreOffice_26.8.3_Linux_${arch}_deb.tar.gz" \
     && url="https://download.documentfoundation.org/libreoffice/stable/26.8.3/deb/$(case "$TARGETARCH" in amd64) echo x86_64 ;; arm64) echo aarch64 ;; esac)/${archive}" \
     && cd /tmp \
-    && curl -fsSL "$url" -o "$archive" \
-    && curl -fsSL "$url.sha256" -o "$archive.sha256" \
+    && (curl --proto '=https' --proto-redir '=https' -fsSL "$url" -o "$archive" \
+        || curl --proto '=https' --proto-redir '=https' -fsSL \
+            "https://ftp.gwdg.de/pub/tdf/${url#https://download.documentfoundation.org/}" -o "$archive") \
+    && curl --proto '=https' --proto-redir '=https' -fsSL "$url.sha256" -o "$archive.sha256" \
     && sha256sum -c "$archive.sha256" \
     && mkdir office \
     && tar -xzf "$archive" -C office --strip-components=1 \
